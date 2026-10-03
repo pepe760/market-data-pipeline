@@ -20,6 +20,7 @@ import uuid
 
 FILES = {'prices.jsonl', 'events.jsonl', 'quality.json'}
 RUN = re.compile(r'^\d{8}T\d{6}Z-[a-f0-9]{12}$')
+STAGE = 'preflight'
 
 
 def now():
@@ -222,28 +223,44 @@ def remote(local=False):
 
 
 def rclone(*args):
-    subprocess.run(['rclone', *map(str, args), '--retries', '2', '--low-level-retries', '2'],
-                   check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=1200)
+    result = subprocess.run(['rclone', *map(str, args), '--retries', '3', '--low-level-retries', '2',
+                             '--retries-sleep', '30s', '--tpslimit', '2'],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=1200)
+    if result.returncode:
+        # Allowlisted diagnostics only; never print vendor messages, URLs or credentials.
+        raw = result.stderr.lower()
+        reason = 'quota' if b'quota' in raw or b'ratelimit' in raw else 'transfer'
+        if b'invalid_grant' in raw:
+            reason = 'credential_expired'
+        raise RuntimeError(reason)
 
 
 def cloud():
+    global STAGE
     target = remote()
     with tempfile.TemporaryDirectory() as tmp:
         base = Path(tmp)
+        STAGE = 'download_config'
         rclone('copyto', target + 'config/universe.json', base / 'universe.json')
+        STAGE = 'validate_config'
         config = universe(json.loads((base / 'universe.json').read_text()))
         dest = base / (now().strftime('%Y%m%dT%H%M%SZ-') + uuid.uuid4().hex[:12])
         dest.mkdir()
+        STAGE = 'collect_and_serialize'
         status = collect(config, dest)
+        STAGE = 'seal'
         seal(dest)
         verify(dest)
         out = target + 'batches/' + dest.name
+        STAGE = 'upload_batch'
         rclone('copy', dest, out, '--exclude', 'COMMITTED.json', '--immutable')
         # Download readback before publishing the final marker.
         check = base / 'readback' / dest.name
+        STAGE = 'readback_batch'
         rclone('copy', out, check)
         (check / 'COMMITTED.json').write_bytes((dest / 'COMMITTED.json').read_bytes())
         verify(check)
+        STAGE = 'commit_marker'
         rclone('copyto', dest / 'COMMITTED.json', out + '/COMMITTED.json', '--immutable')
         rclone('copyto', out + '/COMMITTED.json', check / 'COMMITTED.json')
         verify(check)
@@ -290,6 +307,7 @@ if __name__ == '__main__':
                 code = 0
         print('Private pipeline finished.' if code == 0 else 'Private batch saved with incomplete coverage; inspect private quality report.')
         sys.exit(code)
-    except Exception:
-        print('Pipeline failed; credentials, configuration, provider access or integrity need checking. No data printed.')
+    except Exception as exc:
+        reason = str(exc) if type(exc) is RuntimeError and str(exc) in {'quota', 'transfer', 'credential_expired'} else type(exc).__name__
+        print('Pipeline failed at ' + STAGE + ' (' + reason + '). No data printed.')
         sys.exit(1)
