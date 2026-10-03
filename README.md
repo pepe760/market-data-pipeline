@@ -30,7 +30,31 @@ revision is a new observation, never a rewrite of an older batch.
 The initial lane performs structural validation. Independent, stratified random
 cross-vendor checks are still REQUIRED before research qualification. They are
 not yet automated here; every batch is RESEARCH_ONLY_UNVERIFIED, never PIT-certified.
-No option collection, trading, paper-account writer, or website deployment.
+No trading, paper-account writer, or website deployment.
+
+## Option snapshot lane
+
+`python pipeline.py cloud-options` uses private `config/options.json`, with
+`tickers` and `target_dtes` arrays. A separate `options.yml` workflow runs at
+22:53 UTC weekdays when `OPTIONS_ENABLED=true`. It does not modify or replace
+the existing RSR sparse option collector; same-source overlaps are NOT independent
+cross-checks. No attempt is made to download historical chains through this API.
+
+Each ticker selects the nearest listed expiry to each DTE target, deduplicated,
+then saves ALL vendor-returned call/put strikes for those expiries. Selected and
+offered expiry coverage, errors, zero bids and quality flags are recorded. This
+is not all listed expiries and does not guarantee vendor completeness.
+
+Schema 2 adds `options.jsonl`; the importer remains compatible with schema 1.
+Option rows include bid/ask/last/IV/volume/OI, contract symbol, request/retrieval
+times and the underlying quote returned in the SAME option response. Its vendor
+timestamp is retained separately. Last trade time is NOT bid/ask quote time.
+Unknown option quote clocks, contract deliverables and multipliers remain unknown;
+zero bids never fall back to last, and no synthetic Greeks/prices are added.
+All option rows remain NOT_CERTIFIED / executable_quote=false even when the
+download is complete. Raw invalid markets are preserved with flags, not repaired.
+Collection dates are never backdated to the previous trading session. Missed
+snapshots cannot be recreated by downloading today's chain later.
 
 ## Private Drive layout
 

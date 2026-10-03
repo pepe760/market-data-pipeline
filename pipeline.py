@@ -19,6 +19,7 @@ import time
 import uuid
 
 FILES = {'prices.jsonl', 'events.jsonl', 'quality.json'}
+OPTION_FILES = FILES | {'options.jsonl'}
 RUN = re.compile(r'^\d{8}T\d{6}Z-[a-f0-9]{12}$')
 STAGE = 'preflight'
 
@@ -154,10 +155,11 @@ def collect(config, dest):
 
 
 def seal(dest):
-    manifest = dict(schema=1, run_id=dest.name, created_at=now().isoformat(),
+    files = OPTION_FILES if (dest / 'options.jsonl').exists() else FILES
+    manifest = dict(schema=2 if files == OPTION_FILES else 1, run_id=dest.name, created_at=now().isoformat(),
         code_revision=os.getenv('GITHUB_SHA', 'local-unversioned'),
         dependencies={n: importlib.metadata.version(n) for n in ('yfinance', 'exchange-calendars')},
-        files={name: digest(dest / name) for name in sorted(FILES)})
+        files={name: digest(dest / name) for name in sorted(files)})
     write_json(dest / 'manifest.json', manifest)
     write_json(dest / 'COMMITTED.json', dict(manifest_sha256=digest(dest / 'manifest.json')))
 
@@ -172,9 +174,12 @@ def verify(dest):
     if marker['manifest_sha256'] != digest(dest / 'manifest.json'):
         raise ValueError('Manifest mismatch')
     manifest = json.loads((dest / 'manifest.json').read_text())
-    if manifest['schema'] != 1 or manifest['run_id'] != dest.name or set(manifest['files']) != FILES:
+    expected = {1: FILES, 2: OPTION_FILES}.get(manifest.get('schema'))
+    if expected is None or manifest['run_id'] != dest.name or set(manifest['files']) != expected:
         raise ValueError('Invalid manifest')
     for name, sha in manifest['files'].items():
+        if not (dest / name).is_file() or (dest / name).is_symlink():
+            raise ValueError('Missing or unsafe payload')
         if digest(dest / name) != sha:
             raise ValueError('Content mismatch')
     return manifest
@@ -191,7 +196,8 @@ def import_batch(dest, db):
             if prior[0] != signature:
                 raise ValueError('Immutable batch conflict')
             return False
-        for kind in ('prices', 'events'):
+        kinds = ('prices', 'events', 'options') if manifest['schema'] == 2 else ('prices', 'events')
+        for kind in kinds:
             with (dest / (kind + '.jsonl')).open() as handle:
                 for index, line in enumerate(handle):
                     row = json.loads(line)
@@ -235,19 +241,24 @@ def rclone(*args):
         raise RuntimeError(reason)
 
 
-def cloud():
+def cloud(options=False):
     global STAGE
     target = remote()
     with tempfile.TemporaryDirectory() as tmp:
         base = Path(tmp)
         STAGE = 'download_config'
-        rclone('copyto', target + 'config/universe.json', base / 'universe.json')
+        name = 'options.json' if options else 'universe.json'
+        rclone('copyto', target + 'config/' + name, base / name)
         STAGE = 'validate_config'
-        config = universe(json.loads((base / 'universe.json').read_text()))
+        if options:
+            import options_collector
+            config = options_collector.validate_config(json.loads((base / name).read_text()))
+        else:
+            config = universe(json.loads((base / name).read_text()))
         dest = base / (now().strftime('%Y%m%dT%H%M%SZ-') + uuid.uuid4().hex[:12])
         dest.mkdir()
         STAGE = 'collect_and_serialize'
-        status = collect(config, dest)
+        status = options_collector.collect(config, dest) if options else collect(config, dest)
         STAGE = 'seal'
         seal(dest)
         verify(dest)
@@ -291,15 +302,15 @@ def sync(root):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('mode', choices=['cloud', 'sync'])
+    parser.add_argument('mode', choices=['cloud', 'cloud-options', 'sync'])
     parser.add_argument('--root', type=Path)
     args = parser.parse_args()
     logging.disable(logging.CRITICAL)
     try:
         # Vendor libraries can print response details: never expose them in public logs.
         with open(os.devnull, 'w') as null, contextlib.redirect_stdout(null), contextlib.redirect_stderr(null):
-            if args.mode == 'cloud':
-                code = cloud()
+            if args.mode in ('cloud', 'cloud-options'):
+                code = cloud(options=args.mode == 'cloud-options')
             else:
                 if args.root is None or not args.root.is_absolute():
                     raise ValueError('Absolute private landing root required')
