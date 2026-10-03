@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.venv/
+private/
+work/
+*.env
+*.sqlite*
+*.log
+credentials*
+rclone.conf
