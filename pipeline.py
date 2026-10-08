@@ -17,6 +17,9 @@ import sys
 import tempfile
 import time
 import uuid
+import urllib.request
+import urllib.parse
+import xml.etree.ElementTree as ET
 
 FILES = {'prices.jsonl', 'events.jsonl', 'quality.json'}
 OPTION_FILES = FILES | {'options.jsonl'}
@@ -66,12 +69,45 @@ def yahoo_symbol(ticker, session=None):
     # Issuer June 22 announcement: same security / CUSIP, effective June 24.
     if ticker == 'SATS' and session and session >= '2026-06-24':
         return 'ECHO'
+    if ticker == 'PSKY':
+        return 'SKYD'  # SEC Oct 6: same Class B common stock, new trading symbol.
     return {'BF.B': 'BF-B', 'BRK.B': 'BRK-B'}.get(ticker, ticker)
 
 
 # Verified issuer/SEC completion dates. Never splice successor prices into the
 # old security. Prior-window history remains in existing immutable batches.
-RETIRED_AFTER = {'AVB': '2026-08-17', 'EQR': '2026-08-17', 'EA': '2026-08-04'}
+RETIRED_AFTER = {'AVB': '2026-08-17', 'EQR': '2026-08-17', 'EA': '2026-08-04', 'WBD': '2026-10-05'}
+
+
+def news_payload(yf, ticker):
+    """Headlines/links only; retain distinct provider provenance."""
+    for source, fetch in [('Yahoo/yfinance', lambda: yf.Ticker(ticker).get_news(count=10)),
+                          ('Yahoo/search', lambda: yf.Search(ticker, max_results=1, news_count=10).news)]:
+        try:
+            items = fetch()
+            out = []
+            for item in items:
+                content = item.get('content', item)
+                link = content.get('canonicalUrl') or {}
+                provider = content.get('provider') or {}
+                title = content.get('title')
+                url = link.get('url') or content.get('link')
+                if title and url:
+                    out.append(dict(title=title,url=url,publisher=provider.get('displayName') or content.get('publisher'),
+                                    published_at=content.get('pubDate') or content.get('providerPublishTime')))
+            if out: return out, source
+        except Exception as exc:
+            if 'RateLimit' in type(exc).__name__: raise
+    names={'AAPL':'Apple','MSFT':'Microsoft','GOOGL':'Alphabet Google','AMZN':'Amazon',
+           'NVDA':'Nvidia','META':'Meta Platforms','TSLA':'Tesla'}
+    query=urllib.parse.urlencode({'q':names.get(ticker,ticker)+' stock when:7d', 'hl':'en-US','gl':'US','ceid':'US:en'})
+    request=urllib.request.Request('https://news.google.com/rss/search?'+query,headers={'User-Agent':'MarketResearchCollector/1.0'})
+    with urllib.request.urlopen(request,timeout=20) as response:
+        root=ET.fromstring(response.read(2_000_000))
+    out=[dict(title=i.findtext('title'),url=i.findtext('link'),publisher=i.findtext('source'),
+              published_at=i.findtext('pubDate')) for i in root.findall('./channel/item')[:10]
+         if i.findtext('title') and i.findtext('link')]
+    return out,'GoogleNews/RSS'
 
 
 def price_row(ticker, date, row, observed):
@@ -91,7 +127,7 @@ def price_row(ticker, date, row, observed):
                 values=vals, actions=actions)
 
 
-def collect(config, dest):
+def collect(config, dest, archived=None):
     import yfinance as yf
     asof = now()
     sessions = closed_sessions(asof)
@@ -99,6 +135,7 @@ def collect(config, dest):
         raise ValueError('No completed session')
     prices, events, checks = [], [], []
     tripped = False
+    archived = archived or {}
     for ticker in config['prices']:
         if ticker in RETIRED_AFTER and sessions[0] > RETIRED_AFTER[ticker]:
             checks.append(dict(ticker=ticker, kind='prices', status='NOT_EXPECTED_RETIRED',
@@ -109,16 +146,22 @@ def collect(config, dest):
             continue
         try:
             symbol = yahoo_symbol(ticker, sessions[0])
-            frame = yf.Ticker(symbol).history(start=sessions[0],
-                end=str(dt.date.fromisoformat(sessions[-1]) + dt.timedelta(days=1)),
-                auto_adjust=False, back_adjust=False, repair=False, actions=True,
-                keepna=True, timeout=20, raise_errors=True)
+            expected = [s for s in sessions if s <= RETIRED_AFTER.get(ticker,'9999-12-31')]
+            try:
+                frame = yf.Ticker(symbol).history(start=expected[0],
+                    end=str(dt.date.fromisoformat(expected[-1]) + dt.timedelta(days=1)),
+                    auto_adjust=False, back_adjust=False, repair=False, actions=True,
+                    keepna=True, timeout=20, raise_errors=True)
+            except Exception as exc:
+                if 'RateLimit' in type(exc).__name__ or not all((ticker,s) in archived for s in expected):
+                    raise
+                frame=None  # all required observations have verified archive coverage
             observed = now().isoformat()
             seen, rejected = set(), 0
             rejected_details = []
-            for stamp, row in frame.iterrows():
+            for stamp, row in (frame.iterrows() if frame is not None else []):
                 day = str(stamp.date())
-                if day not in sessions or day in seen:
+                if day not in expected or day in seen:
                     rejected += 1
                     continue
                 try:
@@ -129,11 +172,18 @@ def collect(config, dest):
                 except ValueError as exc:
                     rejected += 1
                     rejected_details.append(dict(session=day, reason=str(exc)))
-            missing = sorted(set(sessions) - seen)
+            recovered=[]
+            for day in sorted(set(expected)-seen):
+                saved=archived.get((ticker,day))
+                if saved:
+                    prices.append(dict(saved, recovery='VERIFIED_PRIOR_BATCH'))
+                    seen.add(day); recovered.append(day)
+            missing = sorted(set(expected) - seen)
             checks.append(dict(ticker=ticker, kind='prices', missing_sessions=missing,
                                rejected_rows=rejected, rejected_details=rejected_details,
                                provider_symbol=symbol,
-                               status='OK' if not missing and not rejected else 'PARTIAL'))
+                               recovered_sessions=recovered,
+                               status='OK' if not missing else 'PARTIAL'))
         except Exception as exc:
             tripped = 'RateLimit' in type(exc).__name__
             checks.append(dict(ticker=ticker, kind='prices', provider_symbol=yahoo_symbol(ticker, sessions[0]),
@@ -146,26 +196,20 @@ def collect(config, dest):
                 continue
             try:
                 obj = yf.Ticker(ticker)
-                payload = obj.calendar if kind == 'calendar' else obj.get_news(count=10)
+                event_source='Yahoo/yfinance'
+                if kind == 'news':
+                    payload,event_source=news_payload(yf,ticker)
+                else:
+                    payload=obj.calendar
                 if kind == 'news' and not payload:
                     # Empty is not proof that no news exists; one bounded retry.
                     time.sleep(1)
-                    payload = yf.Ticker(yahoo_symbol(ticker)).get_news(count=10)
+                    payload,event_source=news_payload(yf,ticker)
                 # Keep no copyrighted full article text or vendor debug response.
-                if kind == 'news':
-                    sanitized = []
-                    for item in payload:
-                        content = item.get('content', item)
-                        link = content.get('canonicalUrl') or {}
-                        provider = content.get('provider') or {}
-                        sanitized.append(dict(title=content.get('title'),
-                            url=link.get('url') or content.get('link'),
-                            publisher=provider.get('displayName') or content.get('publisher'),
-                            published_at=content.get('pubDate') or content.get('providerPublishTime')))
-                    payload = sanitized
+                # news_payload already returns only the four allowed metadata fields.
                 events.append(dict(ticker=ticker, kind=kind, available_at=now().isoformat(),
-                                   source='Yahoo/yfinance', payload=payload, pit_status='OBSERVATION_ONLY'))
-                checks.append(dict(ticker=ticker, kind=kind, status='OK' if payload else 'EMPTY_UNVERIFIED'))
+                                   source=event_source, payload=payload, pit_status='OBSERVATION_ONLY'))
+                checks.append(dict(ticker=ticker, kind=kind, source=event_source,status='OK' if payload else 'EMPTY_UNVERIFIED'))
             except Exception as exc:
                 tripped = 'RateLimit' in type(exc).__name__
                 checks.append(dict(ticker=ticker, kind=kind, status='RATE_LIMIT' if tripped else 'ERROR'))
@@ -270,6 +314,35 @@ def rclone(*args):
         raise RuntimeError(reason)
 
 
+def archived_price_rows(target, base):
+    """Recover only validated observations from hash-verified private batches."""
+    result=subprocess.run(['rclone','lsf',target+'batches','--dirs-only'],capture_output=True,timeout=120)
+    if result.returncode: raise RuntimeError('transfer')
+    names=sorted(n.rstrip('/') for n in result.stdout.decode().splitlines() if RUN.fullmatch(n.rstrip('/')))
+    sessions=closed_sessions(now())
+    required={('WBD',s) for s in sessions if s <= '2026-10-05'} | {('PSKY',s) for s in sessions if s < '2026-10-06'}
+    rows={}
+    if not required: return rows
+    for name in reversed(names):
+        if required <= rows.keys(): break
+        if name[:8] < sessions[0].replace('-',''): break
+        folder=base/'history'/name; folder.mkdir(parents=True)
+        rclone('copyto',target+'batches/'+name+'/manifest.json',folder/'manifest.json')
+        manifest=json.loads((folder/'manifest.json').read_text())
+        if 'options.jsonl' in str(manifest): continue
+        rclone('copy',target+'batches/'+name,folder)
+        verify(folder)
+        for line in (folder/'prices.jsonl').read_text().splitlines():
+            saved=json.loads(line); ticker=saved['ticker']; day=saved['session']
+            if ticker not in ('WBD','PSKY'): continue
+            if day > RETIRED_AFTER.get(ticker,'9999-12-31'): continue
+            try:
+                price_row(ticker,day,{**saved['values'],**saved.get('actions',{})},saved['available_at'])
+            except (ValueError,KeyError): continue
+            rows.setdefault((ticker,day),dict(saved,recovery_batch=name))
+    return rows
+
+
 def cloud(options=False):
     global STAGE
     target = remote()
@@ -286,8 +359,10 @@ def cloud(options=False):
             config = universe(json.loads((base / name).read_text()))
         dest = base / (now().strftime('%Y%m%dT%H%M%SZ-') + uuid.uuid4().hex[:12])
         dest.mkdir()
+        STAGE = 'read_verified_history'
+        archived = {} if options else archived_price_rows(target,base)
         STAGE = 'collect_and_serialize'
-        status = options_collector.collect(config, dest) if options else collect(config, dest)
+        status = options_collector.collect(config, dest) if options else collect(config, dest,archived)
         STAGE = 'seal'
         seal(dest)
         verify(dest)

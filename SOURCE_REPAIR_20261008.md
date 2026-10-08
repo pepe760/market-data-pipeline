@@ -9,3 +9,9 @@ https://www.sec.gov/Archives/edgar/data/915912/000110465926097833/tm2623381d1_ex
 https://careers.ea.com/ea-play/news/ea-announces-completion-of-acquisition
 
 News empty responses get one bounded retry. They still remain EMPTY_UNVERIFIED if no usable response returns. Missing/invalid rows still make the batch PARTIAL; no success threshold is weakened. Private quality reports now contain rejection reasons and exception types without raw exception responses. HUBB/PSKY/WBD failures require this new evidence; no fabricated values, forward filling or presumed delistings.
+
+## Live readback
+
+Source commit 566d695; recovery run 37777562727 saved private batch 20261008T123243Z-03827a65e4f0, read back its quality.json. Prices: 610 OK, 3 NOT_EXPECTED_RETIRED, 2 PARTIAL. BF.B, BRK.B, SATS and HUBB now OK. PSKY remains missing September 17–October 2; WBD has missing sessions and a non-positive October 5 row. All seven news responses remain EMPTY_UNVERIFIED after retry. Batch transfer succeeded, but run still returns 2 for incomplete source coverage; operational failure remains explicitly unresolved for these feeds.
+
+ETF option dependency fix ba3ad92, recovery run 37777419220 SUCCESS. Full parquet-test dependency is now installed by option workflow.
