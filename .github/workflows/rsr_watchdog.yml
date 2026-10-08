@@ -1,0 +1,38 @@
+name: RSR two-week operational pilot
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 4 9-23 10 *'
+permissions:
+  contents: read
+  actions: write
+concurrency:
+  group: rsr-watchdog-private-state
+  cancel-in-progress: false
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq rclone
+      - name: Check RSR and save private receipt
+        env:
+          RSR_READ_TOKEN: ${{ secrets.RSR_READ_TOKEN }}
+          DRIVE_TOKEN: ${{ secrets.DRIVE_TOKEN }}
+          DRIVE_FOLDER_ID: ${{ secrets.DRIVE_FOLDER_ID }}
+          DRIVE_CLIENT_ID: ${{ secrets.DRIVE_CLIENT_ID }}
+          DRIVE_CLIENT_SECRET: ${{ secrets.DRIVE_CLIENT_SECRET }}
+        run: python rsr_watchdog.py
+      - name: End the dated pilot schedule
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$(date -u +%Y-%m-%d)" = "2026-10-23" ]; then
+            gh workflow disable rsr_watchdog.yml --repo "$GITHUB_REPOSITORY"
+          fi
