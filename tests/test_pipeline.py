@@ -10,6 +10,12 @@ import pipeline as p
 
 
 class PipelineTests(unittest.TestCase):
+    def test_provider_identity_mapping(self):
+        self.assertEqual(p.yahoo_symbol('BRK.B'),'BRK-B')
+        self.assertEqual(p.yahoo_symbol('BF.B'),'BF-B')
+        self.assertEqual(p.yahoo_symbol('SATS','2026-06-23'),'SATS')
+        self.assertEqual(p.yahoo_symbol('SATS','2026-06-24'),'ECHO')
+        self.assertEqual(p.yahoo_symbol('AVB','2026-10-08'),'AVB')
     @unittest.skipUnless(importlib.util.find_spec('exchange_calendars'), 'calendar dependency absent')
     def test_calendar_sessions(self):
         # Independence Day observed holiday and a normal summer/winter close.

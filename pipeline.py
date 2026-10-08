@@ -61,6 +61,19 @@ def closed_sessions(asof):
             if cal.session_close(s).to_pydatetime() + dt.timedelta(minutes=90) <= asof]
 
 
+def yahoo_symbol(ticker, session=None):
+    """Canonical input identity is retained; Yahoo share classes use dashes."""
+    # Issuer June 22 announcement: same security / CUSIP, effective June 24.
+    if ticker == 'SATS' and session and session >= '2026-06-24':
+        return 'ECHO'
+    return {'BF.B': 'BF-B', 'BRK.B': 'BRK-B'}.get(ticker, ticker)
+
+
+# Verified issuer/SEC completion dates. Never splice successor prices into the
+# old security. Prior-window history remains in existing immutable batches.
+RETIRED_AFTER = {'AVB': '2026-08-17', 'EQR': '2026-08-17', 'EA': '2026-08-04'}
+
+
 def price_row(ticker, date, row, observed):
     vals = {key: float(row[key]) for key in ('Open', 'High', 'Low', 'Close', 'Adj Close', 'Volume')}
     if not all(math.isfinite(v) for v in vals.values()):
@@ -87,32 +100,44 @@ def collect(config, dest):
     prices, events, checks = [], [], []
     tripped = False
     for ticker in config['prices']:
+        if ticker in RETIRED_AFTER and sessions[0] > RETIRED_AFTER[ticker]:
+            checks.append(dict(ticker=ticker, kind='prices', status='NOT_EXPECTED_RETIRED',
+                               retired_after=RETIRED_AFTER[ticker], missing_sessions=[]))
+            continue
         if tripped:
             checks.append(dict(ticker=ticker, kind='prices', status='NOT_ATTEMPTED_RATE_LIMIT'))
             continue
         try:
-            frame = yf.Ticker(ticker).history(start=sessions[0],
+            symbol = yahoo_symbol(ticker, sessions[0])
+            frame = yf.Ticker(symbol).history(start=sessions[0],
                 end=str(dt.date.fromisoformat(sessions[-1]) + dt.timedelta(days=1)),
                 auto_adjust=False, back_adjust=False, repair=False, actions=True,
                 keepna=True, timeout=20, raise_errors=True)
             observed = now().isoformat()
             seen, rejected = set(), 0
+            rejected_details = []
             for stamp, row in frame.iterrows():
                 day = str(stamp.date())
                 if day not in sessions or day in seen:
                     rejected += 1
                     continue
                 try:
-                    prices.append(price_row(ticker, day, row, observed))
+                    saved = price_row(ticker, day, row, observed)
+                    saved['provider_symbol'] = symbol
+                    prices.append(saved)
                     seen.add(day)
-                except ValueError:
+                except ValueError as exc:
                     rejected += 1
+                    rejected_details.append(dict(session=day, reason=str(exc)))
             missing = sorted(set(sessions) - seen)
             checks.append(dict(ticker=ticker, kind='prices', missing_sessions=missing,
-                               rejected_rows=rejected, status='OK' if not missing and not rejected else 'PARTIAL'))
+                               rejected_rows=rejected, rejected_details=rejected_details,
+                               provider_symbol=symbol,
+                               status='OK' if not missing and not rejected else 'PARTIAL'))
         except Exception as exc:
             tripped = 'RateLimit' in type(exc).__name__
-            checks.append(dict(ticker=ticker, kind='prices', status='RATE_LIMIT' if tripped else 'ERROR'))
+            checks.append(dict(ticker=ticker, kind='prices', provider_symbol=yahoo_symbol(ticker, sessions[0]),
+                               error_type=type(exc).__name__, status='RATE_LIMIT' if tripped else 'ERROR'))
         time.sleep(0.5)
     for ticker in config['events']:
         for kind in ('calendar', 'news'):
@@ -122,6 +147,10 @@ def collect(config, dest):
             try:
                 obj = yf.Ticker(ticker)
                 payload = obj.calendar if kind == 'calendar' else obj.get_news(count=10)
+                if kind == 'news' and not payload:
+                    # Empty is not proof that no news exists; one bounded retry.
+                    time.sleep(1)
+                    payload = yf.Ticker(yahoo_symbol(ticker)).get_news(count=10)
                 # Keep no copyrighted full article text or vendor debug response.
                 if kind == 'news':
                     sanitized = []
@@ -145,7 +174,7 @@ def collect(config, dest):
         with (dest / name).open('w') as handle:
             for row in rows:
                 handle.write(json.dumps(row, default=str, allow_nan=False) + '\n')
-    status = 'COMPLETE' if all(c['status'] == 'OK' for c in checks) else 'PARTIAL'
+    status = 'COMPLETE' if all(c['status'] in ('OK', 'NOT_EXPECTED_RETIRED') for c in checks) else 'PARTIAL'
     write_json(dest / 'quality.json', dict(status=status, checks=checks,
         universe_as_of=config['as_of'], expected_sessions=sessions,
         expected_price_tickers=len(config['prices']), event_tickers=len(config['events']),
