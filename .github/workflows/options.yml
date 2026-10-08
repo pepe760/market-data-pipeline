@@ -30,4 +30,6 @@ jobs:
           DRIVE_FOLDER_ID: ${{ secrets.DRIVE_FOLDER_ID }}
           DRIVE_CLIENT_ID: ${{ secrets.DRIVE_CLIENT_ID }}
           DRIVE_CLIENT_SECRET: ${{ secrets.DRIVE_CLIENT_SECRET }}
+          RSR_OPTIONS_ENABLED: ${{ vars.RSR_OPTIONS_ENABLED }}
+          RSR_READ_TOKEN: ${{ secrets.RSR_READ_TOKEN }}
         run: python pipeline.py cloud-options

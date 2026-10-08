@@ -355,6 +355,10 @@ def cloud(options=False):
         if options:
             import options_collector
             config = options_collector.validate_config(json.loads((base / name).read_text()))
+            if os.getenv('RSR_OPTIONS_ENABLED') == 'true':
+                import rsr_option_universe
+                config=rsr_option_universe.extend_config(config,os.getenv('RSR_READ_TOKEN'),now())
+                options_collector.validate_config(config)
         else:
             config = universe(json.loads((base / name).read_text()))
         dest = base / (now().strftime('%Y%m%dT%H%M%SZ-') + uuid.uuid4().hex[:12])

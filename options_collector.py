@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 def validate_config(config):
     tickers = config['tickers']
     targets = config['target_dtes']
-    if (not isinstance(tickers, list) or not 1 <= len(tickers) <= 100
+    if (not isinstance(tickers, list) or not 1 <= len(tickers) <= 103
             or len(set(tickers)) != len(tickers)
             or any(not re.fullmatch(r'[A-Z][A-Z0-9.-]{0,10}', t) for t in tickers)):
         raise ValueError('Invalid option universe')
@@ -143,6 +143,7 @@ def collect(config, dest, ticker_factory=None, clock=None, pause=time.sleep):
                         for _, row in frame.iterrows():
                             try:
                                 record = normalize(ticker, expiry, side, row, underlying, observed, started)
+                                record['ranking_memberships'] = config.get('rsr_top30',{}).get('memberships',{}).get(ticker,[])
                                 key = record['contract']
                                 if key in seen:
                                     rejected += 1
@@ -169,6 +170,7 @@ def collect(config, dest, ticker_factory=None, clock=None, pause=time.sleep):
     (dest / 'quality.json').write_text(json.dumps(dict(status=status, kind='options',
         checks=checks, option_rows=count, expected_tickers=len(config['tickers']),
         target_dtes=config['target_dtes'], collection_date=today.isoformat(),
+        rsr_top30=config.get('rsr_top30'),
         research_gate='RESEARCH_ONLY_UNVERIFIED', cross_vendor_random_check='PENDING',
         coverage='All vendor-returned strikes on selected expiries only; not all listed expiries',
         gap_policy='No historical backfill; never relabel collection day as an earlier session'), indent=2) + '\n')
