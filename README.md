@@ -20,6 +20,9 @@ Prices use Yahoo via yfinance, explicitly separate split-adjusted vendor Close
 from dividend-adjusted Adj Close. Neither is labelled raw, and neither is silently
 merged into Sharadar. Each batch records retrieval time as `available_at`:
 historical values fetched today were NOT necessarily known on their bar date.
+A ticker that is missing a session, or whose row is non-finite, is read once
+more before that gap is recorded. The second read does not forward-fill. A
+session that is still missing or non-finite keeps the batch PARTIAL.
 Universe is a dated private snapshot, not historical index membership.
 
 Events are current earnings-calendar observations and recent news metadata
@@ -41,9 +44,17 @@ the existing RSR sparse option collector; same-source overlaps are NOT independe
 cross-checks. No attempt is made to download historical chains through this API.
 
 Each ticker selects the nearest listed expiry to each DTE target, deduplicated,
-then saves ALL vendor-returned call/put strikes for those expiries. Selected and
-offered expiry coverage, errors, zero bids and quality flags are recorded. This
-is not all listed expiries and does not guarantee vendor completeness.
+then saves ALL vendor-returned call/put strikes for those expiries. A missing
+side is read once more and the two payloads are unioned by contract; quotes are
+not invented. If the expiry is absent on a confirmation read, or both reads are
+one-sided and have no bid or ask, the next listed expiry for that target is
+saved instead and the skip is recorded on the replacement check. A chain that
+still lists only one side after two reads, with a real bid or ask on that side,
+is the vendor's listed book (`vendor_empty_sides`), not a dropped download.
+Rejected contracts, an empty book, or an unusable expiry with no replacement
+still make the batch PARTIAL. Selected and offered expiry coverage, errors,
+zero bids and quality flags are recorded. This is not all listed expiries and
+does not guarantee vendor completeness.
 
 Schema 2 adds `options.jsonl`; the importer remains compatible with schema 1.
 Option rows include bid/ask/last/IV/volume/OI, contract symbol, request/retrieval

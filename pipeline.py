@@ -110,6 +110,37 @@ def news_payload(yf, ticker):
     return out,'GoogleNews/RSS'
 
 
+def fetch_history(yf, symbol, expected):
+    return yf.Ticker(symbol).history(start=expected[0],
+        end=str(dt.date.fromisoformat(expected[-1]) + dt.timedelta(days=1)),
+        auto_adjust=False, back_adjust=False, repair=False, actions=True,
+        keepna=True, timeout=20, raise_errors=True)
+
+
+def consume_history(frame, ticker, expected, observed, symbol, skip=()):
+    """Keep only finite in-window rows. Duplicate or out-of-window rows are counted, not stored."""
+    saved, seen, rejected, details = [], set(), 0, []
+    skip = set(skip)
+    if frame is None:
+        return saved, seen, rejected, details
+    for stamp, row in frame.iterrows():
+        day = str(stamp.date())
+        if day in skip:
+            continue
+        if day not in expected or day in seen:
+            rejected += 1
+            continue
+        try:
+            item = price_row(ticker, day, row, observed)
+            item['provider_symbol'] = symbol
+            saved.append(item)
+            seen.add(day)
+        except ValueError as exc:
+            rejected += 1
+            details.append(dict(session=day, reason=str(exc)))
+    return saved, seen, rejected, details
+
+
 def price_row(ticker, date, row, observed):
     vals = {key: float(row[key]) for key in ('Open', 'High', 'Low', 'Close', 'Adj Close', 'Volume')}
     if not all(math.isfinite(v) for v in vals.values()):
@@ -148,30 +179,38 @@ def collect(config, dest, archived=None):
             symbol = yahoo_symbol(ticker, sessions[0])
             expected = [s for s in sessions if s <= RETIRED_AFTER.get(ticker,'9999-12-31')]
             try:
-                frame = yf.Ticker(symbol).history(start=expected[0],
-                    end=str(dt.date.fromisoformat(expected[-1]) + dt.timedelta(days=1)),
-                    auto_adjust=False, back_adjust=False, repair=False, actions=True,
-                    keepna=True, timeout=20, raise_errors=True)
+                frame = fetch_history(yf, symbol, expected)
             except Exception as exc:
                 if 'RateLimit' in type(exc).__name__ or not all((ticker,s) in archived for s in expected):
                     raise
                 frame=None  # all required observations have verified archive coverage
             observed = now().isoformat()
-            seen, rejected = set(), 0
-            rejected_details = []
-            for stamp, row in (frame.iterrows() if frame is not None else []):
-                day = str(stamp.date())
-                if day not in expected or day in seen:
-                    rejected += 1
-                    continue
+            saved, seen, rejected, rejected_details = consume_history(frame, ticker, expected, observed, symbol)
+            prices.extend(saved)
+            missing_now = set(expected) - seen
+            refetched_missing = []
+            # A non-finite or absent session is one vendor read, not proof the session is missing.
+            if missing_now and frame is not None:
+                refetched_missing = sorted(missing_now)
+                time.sleep(1)
                 try:
-                    saved = price_row(ticker, day, row, observed)
-                    saved['provider_symbol'] = symbol
-                    prices.append(saved)
-                    seen.add(day)
-                except ValueError as exc:
-                    rejected += 1
-                    rejected_details.append(dict(session=day, reason=str(exc)))
+                    refetch = fetch_history(yf, symbol, expected)
+                except Exception as exc:
+                    if 'RateLimit' in type(exc).__name__:
+                        raise
+                    refetch = None
+                if refetch is not None:
+                    saved, seen2, _ignored, details2 = consume_history(
+                        refetch, ticker, expected, now().isoformat(), symbol, skip=seen)
+                    prices.extend(saved)
+                    rejected -= sum(1 for item in rejected_details if item['session'] in seen2)
+                    rejected_details = [item for item in rejected_details if item['session'] not in seen2]
+                    known = {item['session'] for item in rejected_details}
+                    for item in details2:
+                        if item['session'] not in seen and item['session'] not in seen2 and item['session'] not in known:
+                            rejected_details.append(item)
+                            rejected += 1
+                    seen |= seen2
             recovered=[]
             for day in sorted(set(expected)-seen):
                 saved=archived.get((ticker,day))
@@ -179,11 +218,14 @@ def collect(config, dest, archived=None):
                     prices.append(dict(saved, recovery='VERIFIED_PRIOR_BATCH'))
                     seen.add(day); recovered.append(day)
             missing = sorted(set(expected) - seen)
-            checks.append(dict(ticker=ticker, kind='prices', missing_sessions=missing,
-                               rejected_rows=rejected, rejected_details=rejected_details,
-                               provider_symbol=symbol,
-                               recovered_sessions=recovered,
-                               status='OK' if not missing else 'PARTIAL'))
+            check = dict(ticker=ticker, kind='prices', missing_sessions=missing,
+                         rejected_rows=rejected, rejected_details=rejected_details,
+                         provider_symbol=symbol,
+                         recovered_sessions=recovered,
+                         status='OK' if not missing else 'PARTIAL')
+            if refetched_missing:
+                check['refetched_missing_sessions'] = refetched_missing
+            checks.append(check)
         except Exception as exc:
             tripped = 'RateLimit' in type(exc).__name__
             checks.append(dict(ticker=ticker, kind='prices', provider_symbol=yahoo_symbol(ticker, sessions[0]),

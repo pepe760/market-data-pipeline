@@ -85,6 +85,115 @@ class OptionTests(unittest.TestCase):
                 ticker_factory=lambda t:SimpleNamespace(options=[]),clock=lambda:NOW,pause=lambda t:None)
             self.assertEqual(status,'PARTIAL')
 
+    def test_opposite_side_retries_are_merged(self):
+        state={'n':0}
+        class Flip:
+            options=['2026-10-21']
+            def option_chain(self, expiry):
+                state['n']+=1
+                if state['n']==1:
+                    return SimpleNamespace(calls=Frame([dict(BASE, bid=None, ask=None)]),
+                                           puts=Frame([]), underlying=SPOT)
+                return SimpleNamespace(calls=Frame([]),
+                                       puts=Frame([dict(BASE, contractSymbol='TEST261021P00100000', bid=None, ask=None)]),
+                                       underlying=SPOT)
+        with tempfile.TemporaryDirectory() as root:
+            status=o.collect({'tickers':['TEST'],'target_dtes':[14]}, Path(root),
+                             ticker_factory=lambda t: Flip(), clock=lambda: NOW, pause=lambda t: None)
+            sides=sorted({json.loads(line)['side'] for line in (Path(root)/'options.jsonl').read_text().splitlines()})
+        self.assertEqual(status,'COMPLETE')
+        self.assertEqual(sides, ['call','put'])
+
+    def test_confirmed_one_sided_quote_is_vendor_coverage(self):
+        calls=[]
+        class OneSided:
+            options=['2026-10-21']
+            def option_chain(self, expiry):
+                calls.append(expiry)
+                return SimpleNamespace(calls=Frame([BASE]), puts=Frame([]), underlying=SPOT)
+        with tempfile.TemporaryDirectory() as root:
+            status=o.collect({'tickers':['TEST'],'target_dtes':[14]}, Path(root),
+                             ticker_factory=lambda t: OneSided(), clock=lambda: NOW, pause=lambda t: None)
+            quality=json.loads((Path(root)/'quality.json').read_text())
+        self.assertEqual(status,'COMPLETE')
+        self.assertEqual(calls, ['2026-10-21','2026-10-21'])
+        self.assertEqual(quality['checks'][0]['vendor_empty_sides'], ['put'])
+        self.assertEqual(quality['checks'][0]['rows'], {'call':1,'put':0})
+
+    def test_quote_stripped_expiry_replaced_when_absent_on_confirm(self):
+        class Listed:
+            def __init__(self, options):
+                self.options=options
+            def option_chain(self, expiry):
+                if expiry=='2026-10-21':
+                    return SimpleNamespace(calls=Frame([dict(BASE, bid=None, ask=None)]),
+                                           puts=Frame([]), underlying=SPOT)
+                return SimpleNamespace(calls=Frame([BASE]),
+                                       puts=Frame([dict(BASE, contractSymbol='TEST261023P00100000')]),
+                                       underlying=SPOT)
+        made=[]
+        def factory(ticker):
+            made.append(ticker)
+            return Listed(['2026-10-21','2026-10-23'] if len(made)==1 else ['2026-10-23'])
+        with tempfile.TemporaryDirectory() as root:
+            status=o.collect({'tickers':['TEST'],'target_dtes':[14]}, Path(root),
+                             ticker_factory=factory, clock=lambda: NOW, pause=lambda t: None)
+            rows=[json.loads(line) for line in (Path(root)/'options.jsonl').read_text().splitlines()]
+            quality=json.loads((Path(root)/'quality.json').read_text())
+        self.assertEqual(status,'COMPLETE')
+        self.assertEqual(sorted({row['expiry'] for row in rows}), ['2026-10-23'])
+        self.assertEqual(quality['checks'][0]['expiry'], '2026-10-23')
+        self.assertEqual(quality['checks'][0]['discarded_expiries'][0]['expiry'], '2026-10-21')
+        self.assertEqual(quality['checks'][0]['discarded_expiries'][0]['reason'], 'NOT_LISTED_ON_CONFIRM')
+
+    def test_quote_stripped_still_listed_uses_next_expiry(self):
+        class Listed:
+            options=['2026-10-21','2026-10-23']
+            def option_chain(self, expiry):
+                if expiry=='2026-10-21':
+                    return SimpleNamespace(calls=Frame([dict(BASE, bid=None, ask=None)]),
+                                           puts=Frame([]), underlying=SPOT)
+                return SimpleNamespace(calls=Frame([BASE]),
+                                       puts=Frame([dict(BASE, contractSymbol='TEST261023P00100000')]),
+                                       underlying=SPOT)
+        with tempfile.TemporaryDirectory() as root:
+            status=o.collect({'tickers':['TEST'],'target_dtes':[14]}, Path(root),
+                             ticker_factory=lambda t: Listed(), clock=lambda: NOW, pause=lambda t: None)
+            quality=json.loads((Path(root)/'quality.json').read_text())
+            expiries=sorted({json.loads(line)['expiry'] for line in (Path(root)/'options.jsonl').read_text().splitlines()})
+        self.assertEqual(status,'COMPLETE')
+        self.assertEqual(expiries, ['2026-10-23'])
+        self.assertEqual(quality['checks'][0]['discarded_expiries'][0]['reason'], 'QUOTE_STRIPPED_ONE_SIDED')
+
+    def test_quote_stripped_without_replacement_stays_partial(self):
+        class OnlyBad:
+            options=['2026-10-21']
+            def option_chain(self, expiry):
+                return SimpleNamespace(calls=Frame([dict(BASE, bid=None, ask=None)]),
+                                       puts=Frame([]), underlying=SPOT)
+        with tempfile.TemporaryDirectory() as root:
+            status=o.collect({'tickers':['TEST'],'target_dtes':[14]}, Path(root),
+                             ticker_factory=lambda t: OnlyBad(), clock=lambda: NOW, pause=lambda t: None)
+            quality=json.loads((Path(root)/'quality.json').read_text())
+        self.assertEqual(status,'PARTIAL')
+        self.assertEqual(quality['checks'][0]['reason'], 'QUOTE_STRIPPED_ONE_SIDED')
+        self.assertEqual(quality['checks'][0]['attempts'], 2)
+
+    def test_rejected_contract_stays_partial(self):
+        class Rejected:
+            options=['2026-10-09']
+            def option_chain(self, expiry):
+                return SimpleNamespace(calls=Frame([BASE, dict(BASE, contractSymbol='')]),
+                                       puts=Frame([dict(BASE, contractSymbol='TEST261009P00100000')]),
+                                       underlying=SPOT)
+        with tempfile.TemporaryDirectory() as root:
+            status=o.collect({'tickers':['TEST'],'target_dtes':[7]}, Path(root),
+                             ticker_factory=lambda t: Rejected(), clock=lambda: NOW, pause=lambda t: None)
+            quality=json.loads((Path(root)/'quality.json').read_text())
+        self.assertEqual(status,'PARTIAL')
+        self.assertEqual(quality['checks'][0]['reason'], 'REJECTED_CONTRACTS')
+        self.assertGreater(quality['checks'][0]['rejected_rows'], 0)
+
     def test_rate_limit_no_further_requests(self):
         class RateLimitError(Exception):pass
         calls=[]

@@ -35,3 +35,62 @@ class RecoveryTests(unittest.TestCase):
     def test_skyd_mapping_and_no_post_delisting_expectation(self):
         self.assertEqual(p.yahoo_symbol('PSKY','2026-09-17'),'SKYD')
         self.assertEqual(p.RETIRED_AFTER['WBD'],'2026-10-05')
+
+    def test_nonfinite_session_is_refetched_once(self):
+        good=dict(Open=10,High=11,Low=9,Close=10,**{'Adj Close':10,'Volume':5})
+        bad=dict(good,Close=float('nan'))
+        class Frame:
+            def __init__(self, rows):
+                self.rows=rows
+            def iterrows(self):
+                for day, values in self.rows:
+                    yield dt.datetime.fromisoformat(day+'T00:00:00+00:00'), values
+        yf=Mock()
+        yf.Ticker.return_value.history.side_effect=[
+            Frame([('2026-10-07', good), ('2026-10-08', bad)]),
+            Frame([('2026-10-07', good), ('2026-10-08', good)])]
+        with tempfile.TemporaryDirectory() as temp, patch.dict('sys.modules', {'yfinance': yf}), \
+             patch.object(p, 'closed_sessions', return_value=['2026-10-07', '2026-10-08']), \
+             patch.object(p.time, 'sleep'):
+            self.assertEqual(p.collect({'prices':['HUBB'],'events':[],'as_of':'2026-10-08'}, Path(temp)), 'COMPLETE')
+            self.assertEqual(yf.Ticker.return_value.history.call_count, 2)
+            rows=[json.loads(line) for line in (Path(temp)/'prices.jsonl').read_text().splitlines()]
+            self.assertEqual([row['session'] for row in rows], ['2026-10-07', '2026-10-08'])
+            quality=json.loads((Path(temp)/'quality.json').read_text())
+            self.assertEqual(quality['checks'][0]['refetched_missing_sessions'], ['2026-10-08'])
+            self.assertEqual(quality['checks'][0]['missing_sessions'], [])
+
+    def test_repeated_nonfinite_session_stays_partial(self):
+        good=dict(Open=10,High=11,Low=9,Close=10,**{'Adj Close':10,'Volume':5})
+        bad=dict(good,Close=float('nan'))
+        class Frame:
+            def __init__(self, rows):
+                self.rows=rows
+            def iterrows(self):
+                for day, values in self.rows:
+                    yield dt.datetime.fromisoformat(day+'T00:00:00+00:00'), values
+        yf=Mock()
+        yf.Ticker.return_value.history.side_effect=[
+            Frame([('2026-10-07', good), ('2026-10-08', bad)]),
+            Frame([('2026-10-07', good), ('2026-10-08', bad)])]
+        with tempfile.TemporaryDirectory() as temp, patch.dict('sys.modules', {'yfinance': yf}), \
+             patch.object(p, 'closed_sessions', return_value=['2026-10-07', '2026-10-08']), \
+             patch.object(p.time, 'sleep'):
+            self.assertEqual(p.collect({'prices':['HUBB'],'events':[],'as_of':'2026-10-08'}, Path(temp)), 'PARTIAL')
+            quality=json.loads((Path(temp)/'quality.json').read_text())
+            self.assertEqual(quality['checks'][0]['missing_sessions'], ['2026-10-08'])
+            self.assertEqual(quality['checks'][0]['rejected_details'][0]['reason'], 'Non-finite price')
+            self.assertEqual(yf.Ticker.return_value.history.call_count, 2)
+
+    def test_complete_history_is_not_refetched(self):
+        good=dict(Open=10,High=11,Low=9,Close=10,**{'Adj Close':10,'Volume':5})
+        class Frame:
+            def iterrows(self):
+                yield dt.datetime.fromisoformat('2026-10-08T00:00:00+00:00'), good
+        yf=Mock()
+        yf.Ticker.return_value.history.return_value=Frame()
+        with tempfile.TemporaryDirectory() as temp, patch.dict('sys.modules', {'yfinance': yf}), \
+             patch.object(p, 'closed_sessions', return_value=['2026-10-08']), \
+             patch.object(p.time, 'sleep'):
+            self.assertEqual(p.collect({'prices':['AAPL'],'events':[],'as_of':'2026-10-08'}, Path(temp)), 'COMPLETE')
+        self.assertEqual(yf.Ticker.return_value.history.call_count, 1)
