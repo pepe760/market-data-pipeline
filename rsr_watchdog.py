@@ -49,6 +49,16 @@ def assess(now,runs,html,checks,gate):
         top30_counts={k:len(v) for k,v in ranks['groups'].items()},
         latest_run_id=relevant[0]['id'] if relevant else None)
 
+def deployment_evidence(head,html,token,reader=api):
+    """Pin file history to head; prove identical HTML before reusing deployment."""
+    history=reader('commits?path=index.html&sha='+head+'&per_page=1',token)
+    if not history: raise ValueError('Missing website file history')
+    website_sha=history[0]['sha']
+    deployed_html=reader('contents/index.html?ref='+website_sha,token,True).decode()
+    if deployed_html != html: raise ValueError('Website artifact mismatch')
+    checks=reader('commits/'+website_sha+'/check-runs',token)['check_runs']
+    return website_sha,checks
+
 def run():
     now=p.now(); day=now.astimezone(ZoneInfo('Asia/Hong_Kong')).date()
     if day<START or day>END: return 0
@@ -74,12 +84,14 @@ def run():
                 sha=api('commits/main',token)['sha']
                 html=api('contents/index.html?ref='+sha,token,True).decode()
                 runs=api('actions/workflows/daily_run.yml/runs?per_page=20',token)['workflow_runs']
-                checks=api('commits/'+sha+'/check-runs',token)['check_runs']
+                website_sha,checks=deployment_evidence(sha,html,token)
                 try:
                     with urllib.request.urlopen('https://usstockrv260420.pages.dev/',timeout=30) as response: gate=response.status
                 except urllib.error.HTTPError as exc: gate=exc.code
                 report=assess(now,runs,html,checks,gate)
                 report['source_commit']=sha
+                report['website_commit']=website_sha
+                report['deployment_artifact_matches_current_html']=True
             except Exception as exc:
                 report=dict(status='ACTION_REQUIRED',issues=['WATCHDOG_CHECK_FAILED'],error_type=type(exc).__name__)
             issues=report.get('issues',[])

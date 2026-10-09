@@ -24,6 +24,8 @@ Codex follow-up reads bounded latest status after the GitHub check, deduplicates
 
 Protected live website returns401 without authentication. This is an expected gate response, not content verification. Watchdog explicitly records live_authenticated_content_verified=false. Authenticated browser visual QA remains outside automatic proof until a supported authenticated route is provided.
 
+2026-10-09 attribution correction: daily option-data commits may use [skip ci] and have no deployment check. Resolve latest index.html-changing revision within the pinned current-main history; compare that revision's HTML bytes to current-main HTML before using its Cloudflare check. Store source_commit and website_commit separately. The first false deployment alarm is retained in pilot incident history; do not rewrite it away.
+
 ## End review
 
 Evaluate checked days, incidents, recovery, false positives, missed failures and manual time spent. The watchdog records the first three; William supplies false-positive/missed-event/manual-time observations. No automatic expansion to other apps or continued monitoring beyond the dated pilot. Failure-free checks alone do not establish strategy performance or source accuracy.
