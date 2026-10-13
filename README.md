@@ -21,8 +21,20 @@ from dividend-adjusted Adj Close. Neither is labelled raw, and neither is silent
 merged into Sharadar. Each batch records retrieval time as `available_at`:
 historical values fetched today were NOT necessarily known on their bar date.
 A ticker that is missing a session, or whose row is non-finite, is read once
-more before that gap is recorded. The second read does not forward-fill. A
-session that is still missing or non-finite keeps the batch PARTIAL.
+more before that gap is recorded. The second read does not forward-fill and
+does not invent a price. A session that is still absent, or whose second read
+is not also a non-finite rejection, keeps that check and the batch PARTIAL.
+A session rejected as non-finite on both reads is a confirmed vendor defect:
+the row is omitted, `missing_sessions` still lists the date, and the check
+records `vendor_defective_sessions`. That check is `VENDOR_DEFECT` only when
+it is the ticker's only missing session and the ticker has another session
+stored. If at most five price tickers are in that state and every other check
+is `OK` or `NOT_EXPECTED_RETIRED`, the batch status is
+`COMPLETE_WITH_VENDOR_DEFECTS` and `python pipeline.py cloud` exits 0. The
+Actions log still says to inspect the private quality report.
+`COMPLETE_WITH_VENDOR_DEFECTS` is not full coverage and is not a price for
+the defective session. A wider non-finite outage, any unread gap, a ticker
+with no finite bar, and any other failed check stay PARTIAL and exit 2.
 Universe is a dated private snapshot, not historical index membership.
 
 Events are current earnings-calendar observations and recent news metadata
@@ -108,9 +120,14 @@ Local sync uses a lock, verifies an explicit commit marker and exact hashes, the
 imports append-only observations into `observations.sqlite`. This database is a
 separate landing lane, not `pit.duckdb`. Repeated imports are idempotent.
 
-Failed and empty datasets are retained in quality.json; PARTIAL batches cannot
-be reported as full-universe success. Cloud exits nonzero after preserving a
-partial batch. Import records quality status; it never promotes data quality.
+Failed and empty datasets are retained in quality.json. PARTIAL is incomplete
+coverage: the cloud command exits 2 after the batch is saved, and it cannot
+be reported as full-universe success. COMPLETE_WITH_VENDOR_DEFECTS is a saved
+batch whose only price gaps are isolated confirmed non-finite Yahoo bars
+(at most one session on each of at most five tickers that otherwise have a
+stored session). The command exits 0 and `vendor_price_defects` names those
+sessions. Neither status stores or forward-fills a missing price. Import
+records quality status; it never promotes data quality.
 Quota/rate-limit errors stop a run promptly. Raw data and exception text never
 go to public logs. No public upload-artifact or dataset commits are used.
 
