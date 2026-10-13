@@ -77,6 +77,12 @@ def yahoo_symbol(ticker, session=None):
 # Verified issuer/SEC completion dates. Never splice successor prices into the
 # old security. Prior-window history remains in existing immutable batches.
 RETIRED_AFTER = {'AVB': '2026-08-17', 'EQR': '2026-08-17', 'EA': '2026-08-04', 'WBD': '2026-10-05'}
+# A bar that is non-finite on both Yahoo reads is a vendor defect, not a dropped
+# download. Isolate a few such tickers so one bad print does not fail the daily
+# run; a broader NaN outage still leaves the batch PARTIAL.
+NONFINITE_PRICE = 'Non-finite price'
+MAX_VENDOR_DEFECT_SESSIONS_PER_TICKER = 1
+MAX_ISOLATED_VENDOR_DEFECT_TICKERS = 5
 
 
 def news_payload(yf, ticker):
@@ -144,7 +150,7 @@ def consume_history(frame, ticker, expected, observed, symbol, skip=()):
 def price_row(ticker, date, row, observed):
     vals = {key: float(row[key]) for key in ('Open', 'High', 'Low', 'Close', 'Adj Close', 'Volume')}
     if not all(math.isfinite(v) for v in vals.values()):
-        raise ValueError('Non-finite price')
+        raise ValueError(NONFINITE_PRICE)
     if min(vals[k] for k in ('Open', 'High', 'Low', 'Close', 'Adj Close')) <= 0:
         raise ValueError('Non-positive price')
     if (vals['Volume'] < 0 or vals['High'] < max(vals['Open'], vals['Low'], vals['Close'])
@@ -156,6 +162,55 @@ def price_row(ticker, date, row, observed):
     return dict(ticker=ticker, session=date, available_at=observed, source='Yahoo/yfinance',
                 price_basis='VENDOR_SPLIT_ADJUSTED_NOT_RAW', pit_status='NOT_CERTIFIED',
                 values=vals, actions=actions)
+
+
+def rejection_reasons(details):
+    reasons = {}
+    for item in details:
+        reasons.setdefault(item['session'], item['reason'])
+    return reasons
+
+
+def confirmed_nonfinite(missing, first_reasons, second_reasons):
+    """Sessions both reads rejected as non-finite. Absence is not confirmation."""
+    return [day for day in missing
+            if first_reasons.get(day) == NONFINITE_PRICE and second_reasons.get(day) == NONFINITE_PRICE]
+
+
+def price_check_status(missing, stored, confirmed):
+    if not missing:
+        return 'OK'
+    # Require a stored session so a symbol that never returns a finite bar stays PARTIAL.
+    isolated = (len(confirmed) == len(missing)
+                and 0 < len(confirmed) <= MAX_VENDOR_DEFECT_SESSIONS_PER_TICKER
+                and stored)
+    return 'VENDOR_DEFECT' if isolated else 'PARTIAL'
+
+
+def batch_status(checks):
+    if all(c['status'] in ('OK', 'NOT_EXPECTED_RETIRED') for c in checks):
+        return 'COMPLETE'
+    defects = [c for c in checks if c['status'] == 'VENDOR_DEFECT']
+    allowed = {'OK', 'NOT_EXPECTED_RETIRED', 'VENDOR_DEFECT'}
+    if (defects and len(defects) <= MAX_ISOLATED_VENDOR_DEFECT_TICKERS
+            and all(c['status'] in allowed for c in checks)):
+        return 'COMPLETE_WITH_VENDOR_DEFECTS'
+    return 'PARTIAL'
+
+
+def vendor_price_defects(checks):
+    return [dict(ticker=c['ticker'], sessions=list(c['vendor_defective_sessions']),
+                 reason=NONFINITE_PRICE, check_status=c['status'])
+            for c in checks if c.get('vendor_defective_sessions')]
+
+
+def run_result(status, options=False):
+    """Options coverage rules are unchanged. Price vendor defects exit 0 only when isolated."""
+    if status == 'COMPLETE':
+        return 0, 'Private pipeline finished.'
+    if status == 'COMPLETE_WITH_VENDOR_DEFECTS' and not options:
+        return 0, 'Private batch saved with isolated vendor price defects; inspect private quality report.'
+    return 2, 'Private batch saved with incomplete coverage; inspect private quality report.'
 
 
 def collect(config, dest, archived=None):
@@ -189,6 +244,8 @@ def collect(config, dest, archived=None):
             prices.extend(saved)
             missing_now = set(expected) - seen
             refetched_missing = []
+            first_reasons = rejection_reasons(rejected_details)
+            second_reasons = {}
             # A non-finite or absent session is one vendor read, not proof the session is missing.
             if missing_now and frame is not None:
                 refetched_missing = sorted(missing_now)
@@ -202,6 +259,7 @@ def collect(config, dest, archived=None):
                 if refetch is not None:
                     saved, seen2, _ignored, details2 = consume_history(
                         refetch, ticker, expected, now().isoformat(), symbol, skip=seen)
+                    second_reasons = rejection_reasons(details2)
                     prices.extend(saved)
                     rejected -= sum(1 for item in rejected_details if item['session'] in seen2)
                     rejected_details = [item for item in rejected_details if item['session'] not in seen2]
@@ -218,13 +276,17 @@ def collect(config, dest, archived=None):
                     prices.append(dict(saved, recovery='VERIFIED_PRIOR_BATCH'))
                     seen.add(day); recovered.append(day)
             missing = sorted(set(expected) - seen)
+            # Confirmed only when both reads returned a non-finite bar. Do not store or forward-fill it.
+            confirmed = confirmed_nonfinite(missing, first_reasons, second_reasons)
             check = dict(ticker=ticker, kind='prices', missing_sessions=missing,
                          rejected_rows=rejected, rejected_details=rejected_details,
                          provider_symbol=symbol,
                          recovered_sessions=recovered,
-                         status='OK' if not missing else 'PARTIAL')
+                         status=price_check_status(missing, bool(seen), confirmed))
             if refetched_missing:
                 check['refetched_missing_sessions'] = refetched_missing
+            if confirmed:
+                check['vendor_defective_sessions'] = confirmed
             checks.append(check)
         except Exception as exc:
             tripped = 'RateLimit' in type(exc).__name__
@@ -260,12 +322,18 @@ def collect(config, dest, archived=None):
         with (dest / name).open('w') as handle:
             for row in rows:
                 handle.write(json.dumps(row, default=str, allow_nan=False) + '\n')
-    status = 'COMPLETE' if all(c['status'] in ('OK', 'NOT_EXPECTED_RETIRED') for c in checks) else 'PARTIAL'
+    status = batch_status(checks)
     write_json(dest / 'quality.json', dict(status=status, checks=checks,
         universe_as_of=config['as_of'], expected_sessions=sessions,
         expected_price_tickers=len(config['prices']), event_tickers=len(config['events']),
+        vendor_price_defects=vendor_price_defects(checks),
         research_gate='RESEARCH_ONLY_UNVERIFIED', cross_vendor_random_check='PENDING',
-        gap_policy='All missing sessions retained; no forward fill; older outages need explicit backfill'))
+        gap_policy=('All missing sessions retained; no forward fill; older outages need explicit backfill. '
+                    'A session that is non-finite on both Yahoo reads is a vendor defect and is not stored. '
+                    'COMPLETE_WITH_VENDOR_DEFECTS means every other check is OK or NOT_EXPECTED_RETIRED, '
+                    'each affected ticker still has a stored session and at most %d defective session, '
+                    'and at most %d tickers are affected.'
+                    % (MAX_VENDOR_DEFECT_SESSIONS_PER_TICKER, MAX_ISOLATED_VENDOR_DEFECT_TICKERS))))
     return status
 
 
@@ -425,7 +493,7 @@ def cloud(options=False):
         rclone('copyto', dest / 'COMMITTED.json', out + '/COMMITTED.json', '--immutable')
         rclone('copyto', out + '/COMMITTED.json', check / 'COMMITTED.json')
         verify(check)
-        return 0 if status == 'COMPLETE' else 2
+        return run_result(status, options=options)
 
 
 def sync(root):
@@ -458,15 +526,16 @@ if __name__ == '__main__':
     logging.disable(logging.CRITICAL)
     try:
         # Vendor libraries can print response details: never expose them in public logs.
+        message = 'Private pipeline finished.'
         with open(os.devnull, 'w') as null, contextlib.redirect_stdout(null), contextlib.redirect_stderr(null):
             if args.mode in ('cloud', 'cloud-options'):
-                code = cloud(options=args.mode == 'cloud-options')
+                code, message = cloud(options=args.mode == 'cloud-options')
             else:
                 if args.root is None or not args.root.is_absolute():
                     raise ValueError('Absolute private landing root required')
                 sync(args.root)
                 code = 0
-        print('Private pipeline finished.' if code == 0 else 'Private batch saved with incomplete coverage; inspect private quality report.')
+        print(message)
         sys.exit(code)
     except Exception as exc:
         reason = str(exc) if type(exc) is RuntimeError and str(exc) in {'quota', 'transfer', 'credential_expired'} else type(exc).__name__
