@@ -9,6 +9,7 @@ import pipeline as p
 
 GOOD=dict(Open=10,High=11,Low=9,Close=10,**{'Adj Close':10,'Volume':5})
 BAD=dict(GOOD,Close=float('nan'))
+UNFINAL={**GOOD, 'Close':float('nan'), 'Adj Close':float('nan')}
 
 class Frame:
     def __init__(self, rows):
@@ -198,11 +199,177 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(p.batch_status([ok, dict(status='ERROR')]), 'PARTIAL')
         self.assertEqual(p.batch_status([ok, dict(status='RATE_LIMIT')]), 'PARTIAL')
         self.assertEqual(p.batch_status([defect]*(p.MAX_ISOLATED_VENDOR_DEFECT_TICKERS+1)), 'PARTIAL')
+        waiting=dict(status='CLOSE_UNFINALIZED')
+        overdue=dict(status='CLOSE_OVERDUE')
+        self.assertEqual(p.batch_status([ok, retired, waiting]), 'AWAITING_OFFICIAL_CLOSE')
+        self.assertEqual(p.batch_status([ok, overdue]), 'CLOSE_OVERDUE')
+        self.assertEqual(p.batch_status([waiting, defect]), 'PARTIAL')
+        self.assertEqual(p.batch_status([waiting, overdue]), 'PARTIAL')
+        self.assertEqual(p.batch_status([ok, waiting, dict(status='PARTIAL')]), 'PARTIAL')
 
     def test_run_result_leaves_option_failures_nonzero(self):
         self.assertEqual(p.run_result('COMPLETE', options=True), (0, 'Private pipeline finished.'))
         self.assertEqual(p.run_result('PARTIAL', options=True)[0], 2)
         self.assertEqual(p.run_result('COMPLETE_WITH_VENDOR_DEFECTS', options=True)[0], 2)
+        self.assertEqual(p.run_result('AWAITING_OFFICIAL_CLOSE', options=True)[0], 2)
+        self.assertEqual(p.run_result('CLOSE_OVERDUE', options=True)[0], 2)
+
+    def test_official_close_deadline_boundary(self):
+        close=dt.datetime(2026,10,15,20,0,tzinfo=dt.timezone.utc)
+        self.assertTrue(p.official_close_pending(close, close+dt.timedelta(hours=5)))
+        self.assertTrue(p.official_close_pending(close, close+p.OFFICIAL_CLOSE_DEADLINE))
+        self.assertFalse(p.official_close_pending(close, close+p.OFFICIAL_CLOSE_DEADLINE+dt.timedelta(seconds=1)))
+        self.assertEqual(p.OFFICIAL_CLOSE_DEADLINE, dt.timedelta(hours=16))
+        self.assertFalse(p.latest_official_close_pending([], close))
+        # Regular close 20:00 UTC; early close (day after Thanksgiving 2026) 18:00 UTC.
+        self.assertTrue(p.latest_official_close_pending(['2026-10-15'], close+dt.timedelta(hours=12)))
+        self.assertFalse(p.latest_official_close_pending(
+            ['2026-10-15'], close+dt.timedelta(hours=16, seconds=1)))
+        early=dt.datetime(2026,11,27,18,0,tzinfo=dt.timezone.utc)
+        self.assertTrue(p.latest_official_close_pending(['2026-11-27'], early+dt.timedelta(hours=16)))
+        self.assertFalse(p.latest_official_close_pending(
+            ['2026-11-27'], early+dt.timedelta(hours=16, seconds=1)))
+
+    def test_unpublished_official_close_is_not_a_vendor_defect_or_a_price(self):
+        frames=[
+            Frame([('2026-10-07', GOOD), ('2026-10-08', UNFINAL)]),
+            Frame([('2026-10-07', GOOD), ('2026-10-08', UNFINAL)])]
+        with patch.object(p, 'latest_official_close_pending', return_value=True):
+            status, quality, rows, yf=collect_history(
+                frames, ['ABBV'], ['2026-10-07', '2026-10-08'])
+        self.assertEqual(status, 'AWAITING_OFFICIAL_CLOSE')
+        self.assertEqual(yf.Ticker.return_value.history.call_count, 2)
+        self.assertEqual([row['session'] for row in rows], ['2026-10-07'])
+        self.assertTrue(all(math.isfinite(value) for row in rows for value in row['values'].values()))
+        check=quality['checks'][0]
+        self.assertEqual(check['status'], 'CLOSE_UNFINALIZED')
+        self.assertEqual(check['missing_sessions'], ['2026-10-08'])
+        self.assertEqual(check['unfinalized_close_sessions'], ['2026-10-08'])
+        self.assertEqual(check['rejected_details'][0]['reason'], 'Unfinalized close')
+        self.assertNotIn('vendor_defective_sessions', check)
+        self.assertEqual(quality['vendor_price_defects'], [])
+        self.assertEqual(quality['pending_official_closes'], [dict(
+            ticker='ABBV', sessions=['2026-10-08'], reason='Unfinalized close',
+            check_status='CLOSE_UNFINALIZED')])
+        self.assertEqual(quality['overdue_official_closes'], [])
+        self.assertEqual(quality['official_close_deadline_hours'], 16)
+        code, message=p.run_result(status, pending_closes=1)
+        self.assertEqual(code, 0)
+        self.assertIn('1 price ticker', message)
+        self.assertIn('not published yet', message)
+
+    def test_many_unpublished_closes_do_not_use_the_vendor_defect_cap(self):
+        sessions=['2026-10-07', '2026-10-08']
+        tickers=['T%d' % i for i in range(p.MAX_ISOLATED_VENDOR_DEFECT_TICKERS+1)]
+        frames=[]
+        for _ in tickers:
+            frames.append(Frame([('2026-10-07', GOOD), ('2026-10-08', UNFINAL)]))
+            frames.append(Frame([('2026-10-07', GOOD), ('2026-10-08', UNFINAL)]))
+        with patch.object(p, 'latest_official_close_pending', return_value=True):
+            status, quality, rows, _yf=collect_history(frames, tickers, sessions)
+        self.assertEqual(status, 'AWAITING_OFFICIAL_CLOSE')
+        self.assertEqual(len(quality['pending_official_closes']), len(tickers))
+        self.assertEqual(quality['vendor_price_defects'], [])
+        self.assertEqual(len(rows), len(tickers))
+        self.assertTrue(all(row['session']=='2026-10-07' for row in rows))
+        code, message=p.run_result(status, pending_closes=len(tickers))
+        self.assertEqual(code, 0)
+        self.assertIn('%d price tickers' % len(tickers), message)
+
+    def test_unpublished_close_past_the_deadline_fails(self):
+        frames=[
+            Frame([('2026-10-07', GOOD), ('2026-10-08', UNFINAL)]),
+            Frame([('2026-10-07', GOOD), ('2026-10-08', UNFINAL)])]
+        with patch.object(p, 'latest_official_close_pending', return_value=False):
+            status, quality, rows, _yf=collect_history(
+                frames, ['ABBV'], ['2026-10-07', '2026-10-08'])
+        self.assertEqual(status, 'CLOSE_OVERDUE')
+        self.assertEqual(quality['checks'][0]['status'], 'CLOSE_OVERDUE')
+        self.assertEqual(quality['checks'][0]['unfinalized_close_sessions'], ['2026-10-08'])
+        self.assertEqual(quality['pending_official_closes'], [])
+        self.assertEqual(quality['overdue_official_closes'][0]['ticker'], 'ABBV')
+        self.assertEqual(quality['vendor_price_defects'], [])
+        self.assertEqual([row['session'] for row in rows], ['2026-10-07'])
+        code, message=p.run_result(status, overdue_closes=1)
+        self.assertEqual(code, 2)
+        self.assertIn('deadline', message)
+
+    def test_unpublished_close_on_an_older_session_is_overdue(self):
+        frames=[
+            Frame([('2026-10-07', UNFINAL), ('2026-10-08', GOOD)]),
+            Frame([('2026-10-07', UNFINAL), ('2026-10-08', GOOD)])]
+        with patch.object(p, 'latest_official_close_pending', return_value=True):
+            status, quality, rows, _yf=collect_history(
+                frames, ['ABBV'], ['2026-10-07', '2026-10-08'])
+        self.assertEqual(status, 'CLOSE_OVERDUE')
+        self.assertEqual(quality['checks'][0]['missing_sessions'], ['2026-10-07'])
+        self.assertEqual([row['session'] for row in rows], ['2026-10-08'])
+
+    def test_unpublished_close_does_not_excuse_an_older_missing_session(self):
+        frames=[Frame([('2026-10-08', UNFINAL)]), Frame([('2026-10-08', UNFINAL)])]
+        with patch.object(p, 'latest_official_close_pending', return_value=True):
+            status, quality, rows, _yf=collect_history(
+                frames, ['ABBV'], ['2026-10-07', '2026-10-08'])
+        self.assertEqual(status, 'PARTIAL')
+        self.assertEqual(quality['checks'][0]['status'], 'PARTIAL')
+        self.assertEqual(quality['checks'][0]['missing_sessions'], ['2026-10-07', '2026-10-08'])
+        self.assertEqual(quality['checks'][0]['unfinalized_close_sessions'], ['2026-10-08'])
+        self.assertEqual(quality['pending_official_closes'], [])
+        self.assertEqual(rows, [])
+        self.assertEqual(p.run_result(status)[0], 2)
+
+    def test_true_gap_beside_an_unpublished_close_stays_partial(self):
+        frames=[
+            Frame([('2026-10-07', GOOD), ('2026-10-08', UNFINAL)]),
+            Frame([('2026-10-07', GOOD), ('2026-10-08', UNFINAL)]),
+            Frame([('2026-10-07', GOOD)]),
+            Frame([('2026-10-07', GOOD)])]
+        with patch.object(p, 'latest_official_close_pending', return_value=True):
+            status, quality, _rows, _yf=collect_history(
+                frames, ['ABBV', 'AAPL'], ['2026-10-07', '2026-10-08'])
+        self.assertEqual(status, 'PARTIAL')
+        checks={item['ticker']: item for item in quality['checks']}
+        self.assertEqual(checks['ABBV']['status'], 'CLOSE_UNFINALIZED')
+        self.assertEqual(checks['AAPL']['status'], 'PARTIAL')
+        self.assertEqual(p.run_result(status)[0], 2)
+
+    def test_vendor_defect_beside_an_unpublished_close_stays_partial(self):
+        frames=[
+            Frame([('2026-10-07', GOOD), ('2026-10-08', UNFINAL)]),
+            Frame([('2026-10-07', GOOD), ('2026-10-08', UNFINAL)]),
+            Frame([('2026-10-07', GOOD), ('2026-10-08', BAD)]),
+            Frame([('2026-10-07', GOOD), ('2026-10-08', BAD)])]
+        with patch.object(p, 'latest_official_close_pending', return_value=True):
+            status, quality, rows, _yf=collect_history(
+                frames, ['ABBV', 'HUBB'], ['2026-10-07', '2026-10-08'])
+        self.assertEqual(status, 'PARTIAL')
+        checks={item['ticker']: item for item in quality['checks']}
+        self.assertEqual(checks['ABBV']['status'], 'CLOSE_UNFINALIZED')
+        self.assertEqual(checks['HUBB']['status'], 'VENDOR_DEFECT')
+        self.assertEqual(quality['vendor_price_defects'][0]['ticker'], 'HUBB')
+        self.assertTrue(all(math.isfinite(value) for row in rows for value in row['values'].values()))
+        self.assertNotIn(('ABBV', '2026-10-08'), {(row['ticker'], row['session']) for row in rows})
+
+    def test_unpublished_close_that_later_prints_is_stored(self):
+        frames=[
+            Frame([('2026-10-07', GOOD), ('2026-10-08', UNFINAL)]),
+            Frame([('2026-10-07', GOOD), ('2026-10-08', GOOD)])]
+        status, quality, rows, yf=collect_history(
+            frames, ['ABBV'], ['2026-10-07', '2026-10-08'])
+        self.assertEqual(status, 'COMPLETE')
+        self.assertEqual(yf.Ticker.return_value.history.call_count, 2)
+        self.assertEqual([row['session'] for row in rows], ['2026-10-07', '2026-10-08'])
+        self.assertNotIn('unfinalized_close_sessions', quality['checks'][0])
+        self.assertEqual(quality['pending_official_closes'], [])
+
+    def test_close_only_nan_stays_a_nonfinite_vendor_defect(self):
+        # Adj Close still finite: this is not the unpublished-close pattern.
+        with self.assertRaises(ValueError) as raised:
+            p.price_row('HUBB', '2026-10-08', BAD, '2026-10-08T00:00:00Z')
+        self.assertEqual(str(raised.exception), 'Non-finite price')
+        with self.assertRaises(ValueError) as raised:
+            p.price_row('ABBV', '2026-10-08', UNFINAL, '2026-10-08T00:00:00Z')
+        self.assertEqual(str(raised.exception), 'Unfinalized close')
 
     def test_complete_history_is_not_refetched(self):
         class One:

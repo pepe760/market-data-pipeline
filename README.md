@@ -35,6 +35,16 @@ Actions log still says to inspect the private quality report.
 `COMPLETE_WITH_VENDOR_DEFECTS` is not full coverage and is not a price for
 the defective session. A wider non-finite outage, any unread gap, a ticker
 with no finite bar, and any other failed check stay PARTIAL and exit 2.
+A latest-session bar whose Open, High, Low, and Volume are finite but whose
+Close and Adj Close are both non-finite on both reads is an unpublished
+official close, not a vendor defect. The partial bar is not stored and no
+other Yahoo field is copied into Close. While that session is still inside
+16 hours after the exchange close, and every other check is `OK` or
+`NOT_EXPECTED_RETIRED`, the batch status is `AWAITING_OFFICIAL_CLOSE` and
+the cloud command exits 0. `pending_official_closes` names the tickers.
+The same gap after the deadline is `CLOSE_OVERDUE` and exits 2. An
+unpublished close on an older session is overdue immediately. A true missing
+session stays PARTIAL.
 Universe is a dated private snapshot, not historical index membership.
 
 Events are current earnings-calendar observations and recent news metadata
@@ -126,8 +136,12 @@ be reported as full-universe success. COMPLETE_WITH_VENDOR_DEFECTS is a saved
 batch whose only price gaps are isolated confirmed non-finite Yahoo bars
 (at most one session on each of at most five tickers that otherwise have a
 stored session). The command exits 0 and `vendor_price_defects` names those
-sessions. Neither status stores or forward-fills a missing price. Import
-records quality status; it never promotes data quality.
+sessions. AWAITING_OFFICIAL_CLOSE is a saved batch whose only price gaps are
+unpublished official closes on the latest session, still inside the 16-hour
+deadline. The command exits 0 and `pending_official_closes` names those
+sessions. CLOSE_OVERDUE is that same gap after the deadline, and the command
+exits 2. None of these statuses stores or forward-fills a missing price.
+Import records quality status; it never promotes data quality.
 Quota/rate-limit errors stop a run promptly. Raw data and exception text never
 go to public logs. No public upload-artifact or dataset commits are used.
 

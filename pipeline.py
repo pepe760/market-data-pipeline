@@ -81,6 +81,13 @@ RETIRED_AFTER = {'AVB': '2026-08-17', 'EQR': '2026-08-17', 'EA': '2026-08-04', '
 # download. Isolate a few such tickers so one bad print does not fail the daily
 # run; a broader NaN outage still leaves the batch PARTIAL.
 NONFINITE_PRICE = 'Non-finite price'
+# Yahoo often prints Open/High/Low/Volume for a new session before Close and
+# Adj Close. That null close was still present about five hours after the
+# 2026-10-13..16 closes and was finite by the next morning catch-up (~12h).
+# It is not a vendor defect and it is not stored. Fail only if it is still
+# missing after this deadline. Do not synthesize Close from another field.
+UNFINALIZED_CLOSE = 'Unfinalized close'
+OFFICIAL_CLOSE_DEADLINE = dt.timedelta(hours=16)
 MAX_VENDOR_DEFECT_SESSIONS_PER_TICKER = 1
 MAX_ISOLATED_VENDOR_DEFECT_TICKERS = 5
 
@@ -149,6 +156,10 @@ def consume_history(frame, ticker, expected, observed, symbol, skip=()):
 
 def price_row(ticker, date, row, observed):
     vals = {key: float(row[key]) for key in ('Open', 'High', 'Low', 'Close', 'Adj Close', 'Volume')}
+    # Official close not published yet. Open/High/Low/Volume are not a substitute.
+    traded = all(math.isfinite(vals[k]) for k in ('Open', 'High', 'Low', 'Volume'))
+    if traded and not math.isfinite(vals['Close']) and not math.isfinite(vals['Adj Close']):
+        raise ValueError(UNFINALIZED_CLOSE)
     if not all(math.isfinite(v) for v in vals.values()):
         raise ValueError(NONFINITE_PRICE)
     if min(vals[k] for k in ('Open', 'High', 'Low', 'Close', 'Adj Close')) <= 0:
@@ -173,13 +184,47 @@ def rejection_reasons(details):
 
 def confirmed_nonfinite(missing, first_reasons, second_reasons):
     """Sessions both reads rejected as non-finite. Absence is not confirmation."""
+    return confirmed_reason(missing, first_reasons, second_reasons, NONFINITE_PRICE)
+
+
+def confirmed_unfinalized_closes(missing, first_reasons, second_reasons):
+    """Both reads had a traded bar whose Close and Adj Close were not finite."""
+    return confirmed_reason(missing, first_reasons, second_reasons, UNFINALIZED_CLOSE)
+
+
+def confirmed_reason(missing, first_reasons, second_reasons, reason):
     return [day for day in missing
-            if first_reasons.get(day) == NONFINITE_PRICE and second_reasons.get(day) == NONFINITE_PRICE]
+            if first_reasons.get(day) == reason and second_reasons.get(day) == reason]
 
 
-def price_check_status(missing, stored, confirmed):
+def official_close_pending(session_close, asof, deadline=OFFICIAL_CLOSE_DEADLINE):
+    """True until the official-close publication deadline for this session."""
+    return asof <= session_close + deadline
+
+
+def latest_official_close_pending(sessions, asof):
+    """True while the latest expected session may still be waiting on Yahoo's close."""
+    if not sessions:
+        return False
+    import exchange_calendars as xc
+    cal = xc.get_calendar('XNYS')
+    close = cal.session_close(sessions[-1]).to_pydatetime()
+    if close.tzinfo is None:
+        close = close.replace(tzinfo=dt.timezone.utc)
+    else:
+        close = close.astimezone(dt.timezone.utc)
+    return official_close_pending(close, asof)
+
+
+def price_check_status(missing, stored, confirmed, pending=(), overdue=()):
     if not missing:
         return 'OK'
+    missing_set = set(missing)
+    # Pending closes need no stored session: the traded bar shows the symbol was read.
+    if pending and set(pending) == missing_set:
+        return 'CLOSE_UNFINALIZED'
+    if overdue and set(overdue) == missing_set and not pending:
+        return 'CLOSE_OVERDUE'
     # Require a stored session so a symbol that never returns a finite bar stays PARTIAL.
     isolated = (len(confirmed) == len(missing)
                 and 0 < len(confirmed) <= MAX_VENDOR_DEFECT_SESSIONS_PER_TICKER
@@ -188,12 +233,17 @@ def price_check_status(missing, stored, confirmed):
 
 
 def batch_status(checks):
-    if all(c['status'] in ('OK', 'NOT_EXPECTED_RETIRED') for c in checks):
+    statuses = {c['status'] for c in checks}
+    if statuses <= {'OK', 'NOT_EXPECTED_RETIRED'}:
         return 'COMPLETE'
+    if 'CLOSE_UNFINALIZED' in statuses and statuses <= {'OK', 'NOT_EXPECTED_RETIRED', 'CLOSE_UNFINALIZED'}:
+        return 'AWAITING_OFFICIAL_CLOSE'
+    if 'CLOSE_OVERDUE' in statuses and statuses <= {'OK', 'NOT_EXPECTED_RETIRED', 'CLOSE_OVERDUE'}:
+        return 'CLOSE_OVERDUE'
     defects = [c for c in checks if c['status'] == 'VENDOR_DEFECT']
     allowed = {'OK', 'NOT_EXPECTED_RETIRED', 'VENDOR_DEFECT'}
     if (defects and len(defects) <= MAX_ISOLATED_VENDOR_DEFECT_TICKERS
-            and all(c['status'] in allowed for c in checks)):
+            and statuses <= allowed):
         return 'COMPLETE_WITH_VENDOR_DEFECTS'
     return 'PARTIAL'
 
@@ -204,12 +254,34 @@ def vendor_price_defects(checks):
             for c in checks if c.get('vendor_defective_sessions')]
 
 
-def run_result(status, options=False):
+def official_close_gaps(checks, status_name):
+    return [dict(ticker=c['ticker'], sessions=list(c['unfinalized_close_sessions']),
+                 reason=UNFINALIZED_CLOSE, check_status=c['status'])
+            for c in checks if c.get('status') == status_name and c.get('unfinalized_close_sessions')]
+
+
+def _ticker_count(count):
+    return '1 price ticker' if count == 1 else '%d price tickers' % count
+
+
+def run_result(status, options=False, pending_closes=None, overdue_closes=None):
     """Options coverage rules are unchanged. Price vendor defects exit 0 only when isolated."""
     if status == 'COMPLETE':
         return 0, 'Private pipeline finished.'
     if status == 'COMPLETE_WITH_VENDOR_DEFECTS' and not options:
         return 0, 'Private batch saved with isolated vendor price defects; inspect private quality report.'
+    if status == 'AWAITING_OFFICIAL_CLOSE' and not options:
+        if pending_closes:
+            return 0, ('Private batch saved; official close not published yet for %s '
+                       'on the latest session. Inspect private quality report.' % _ticker_count(pending_closes))
+        return 0, ('Private batch saved; official close not published yet for the latest session. '
+                   'Inspect private quality report.')
+    if status == 'CLOSE_OVERDUE':
+        if overdue_closes:
+            return 2, ('Private batch saved; official close still unpublished after the deadline '
+                       'for %s. Inspect private quality report.' % _ticker_count(overdue_closes))
+        return 2, ('Private batch saved; official close still unpublished after the deadline. '
+                   'Inspect private quality report.')
     return 2, 'Private batch saved with incomplete coverage; inspect private quality report.'
 
 
@@ -222,6 +294,14 @@ def collect(config, dest, archived=None):
     prices, events, checks = [], [], []
     tripped = False
     archived = archived or {}
+    allow_pending = None
+
+    def close_still_pending():
+        nonlocal allow_pending
+        if allow_pending is None:
+            allow_pending = latest_official_close_pending(sessions, asof)
+        return allow_pending
+
     for ticker in config['prices']:
         if ticker in RETIRED_AFTER and sessions[0] > RETIRED_AFTER[ticker]:
             checks.append(dict(ticker=ticker, kind='prices', status='NOT_EXPECTED_RETIRED',
@@ -276,17 +356,29 @@ def collect(config, dest, archived=None):
                     prices.append(dict(saved, recovery='VERIFIED_PRIOR_BATCH'))
                     seen.add(day); recovered.append(day)
             missing = sorted(set(expected) - seen)
-            # Confirmed only when both reads returned a non-finite bar. Do not store or forward-fill it.
+            # Confirmed only when both reads agree. Do not store or forward-fill either gap.
             confirmed = confirmed_nonfinite(missing, first_reasons, second_reasons)
+            unfinalized = confirmed_unfinalized_closes(missing, first_reasons, second_reasons)
+            pending, overdue = [], []
+            if unfinalized:
+                latest = sessions[-1]
+                still_pending = close_still_pending() and latest in unfinalized
+                for day in unfinalized:
+                    if still_pending and day == latest:
+                        pending.append(day)
+                    else:
+                        overdue.append(day)
             check = dict(ticker=ticker, kind='prices', missing_sessions=missing,
                          rejected_rows=rejected, rejected_details=rejected_details,
                          provider_symbol=symbol,
                          recovered_sessions=recovered,
-                         status=price_check_status(missing, bool(seen), confirmed))
+                         status=price_check_status(missing, bool(seen), confirmed, pending, overdue))
             if refetched_missing:
                 check['refetched_missing_sessions'] = refetched_missing
             if confirmed:
                 check['vendor_defective_sessions'] = confirmed
+            if unfinalized:
+                check['unfinalized_close_sessions'] = unfinalized
             checks.append(check)
         except Exception as exc:
             tripped = 'RateLimit' in type(exc).__name__
@@ -327,13 +419,22 @@ def collect(config, dest, archived=None):
         universe_as_of=config['as_of'], expected_sessions=sessions,
         expected_price_tickers=len(config['prices']), event_tickers=len(config['events']),
         vendor_price_defects=vendor_price_defects(checks),
+        pending_official_closes=official_close_gaps(checks, 'CLOSE_UNFINALIZED'),
+        overdue_official_closes=official_close_gaps(checks, 'CLOSE_OVERDUE'),
+        official_close_deadline_hours=int(OFFICIAL_CLOSE_DEADLINE.total_seconds() // 3600),
         research_gate='RESEARCH_ONLY_UNVERIFIED', cross_vendor_random_check='PENDING',
         gap_policy=('All missing sessions retained; no forward fill; older outages need explicit backfill. '
                     'A session that is non-finite on both Yahoo reads is a vendor defect and is not stored. '
                     'COMPLETE_WITH_VENDOR_DEFECTS means every other check is OK or NOT_EXPECTED_RETIRED, '
                     'each affected ticker still has a stored session and at most %d defective session, '
-                    'and at most %d tickers are affected.'
-                    % (MAX_VENDOR_DEFECT_SESSIONS_PER_TICKER, MAX_ISOLATED_VENDOR_DEFECT_TICKERS))))
+                    'and at most %d tickers are affected. '
+                    'A latest-session bar with finite Open, High, Low, and Volume but non-finite Close and '
+                    'Adj Close on both reads is an unpublished official close: it is not stored and it is not '
+                    'a vendor defect. AWAITING_OFFICIAL_CLOSE means every other check is OK or '
+                    'NOT_EXPECTED_RETIRED and that close is still inside %d hours after the session close. '
+                    'After that deadline the same gap is CLOSE_OVERDUE.'
+                    % (MAX_VENDOR_DEFECT_SESSIONS_PER_TICKER, MAX_ISOLATED_VENDOR_DEFECT_TICKERS,
+                       int(OFFICIAL_CLOSE_DEADLINE.total_seconds() // 3600)))))
     return status
 
 
@@ -493,7 +594,10 @@ def cloud(options=False):
         rclone('copyto', dest / 'COMMITTED.json', out + '/COMMITTED.json', '--immutable')
         rclone('copyto', out + '/COMMITTED.json', check / 'COMMITTED.json')
         verify(check)
-        return run_result(status, options=options)
+        quality = json.loads((dest / 'quality.json').read_text())
+        return run_result(status, options=options,
+                          pending_closes=len(quality.get('pending_official_closes') or []),
+                          overdue_closes=len(quality.get('overdue_official_closes') or []))
 
 
 def sync(root):
