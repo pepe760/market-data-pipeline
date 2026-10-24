@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "stocks": ["SPY", "QQQ"],
+  "crypto": ["BTCUSDT", "ETHUSDT"],
+  "crypto_market": "spot",
+  "stock_days": 21,
+  "crypto_days": 2,
+  "max_jobs": 25,
+  "max_requests": 60,
+  "max_bytes": 64000000,
+  "options_provider": "disabled"
+}
