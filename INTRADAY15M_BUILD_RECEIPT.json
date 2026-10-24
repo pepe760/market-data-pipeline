@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "checked_at": "2026-10-24T16:20:52Z",
+  "status": "LOCAL_PROTOTYPE_TESTED_NOT_ACTIVATED",
+  "code_sha256": "a9e504acc25a67a9d6ab75e592570a45b305f297ebca098681a4d0520a957266",
+  "tests": {"suite": "tests", "passed": 51, "skipped": 0, "failed": 0},
+  "pilots": [
+    {"asset": "crypto", "symbols": 2, "rows": 192, "batch": "20261024T161509Z-8d45743ce8bd", "manifest_sha256": "eb94b094c566c7a061f7b2d35aabd90859b0757410e3c4db2692f1263db2ccb1", "local_hash_verification": "PASS"},
+    {"asset": "US_regular_session_bars", "symbols": 2, "rows": 156, "batch": "20261024T162027Z-49c7af8e94dc", "manifest_sha256": "18b93d83c36d8d6264bc2a83457347b4fc9bf33e6d3692c774dce51a8e352e7d", "local_hash_verification": "PASS"}
+  ],
+  "us_current_directory_symbols": 13199,
+  "crypto_current_directory": "SOURCE_UNAVAILABLE_BUDGETSTOP_EXACT_HTTP_NOT_RETAINED",
+  "independent_cross_source_random_price_checks": "PENDING",
+  "option_greeks_lane": "BLOCKED_NO_AUTHORIZED_15M_QUOTE_GREEKS_PROVIDER",
+  "option_rows": 0,
+  "research_gate": "RESEARCH_ONLY_UNVERIFIED",
+  "source_pushed": false,
+  "github_schedule_enabled": false,
+  "remote_delivery_tested": false,
+  "drive_uploaded": false,
+  "canonical_database_imported": false,
+  "existing_daily_collector_modified": false,
+  "paid_subscription_purchased": false
+}
