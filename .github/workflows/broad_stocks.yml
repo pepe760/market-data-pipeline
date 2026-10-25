@@ -1,0 +1,37 @@
+name: Broad stock 15-minute bars
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '13 8 * * 2-6'
+permissions:
+  contents: read
+concurrency:
+  group: broad-stock-shards
+  cancel-in-progress: false
+jobs:
+  collect:
+    if: vars.BROAD_COLLECTION_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r intraday-requirements.txt
+      - run: python -m unittest discover -s tests -v
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq rclone
+      - run: python broad_collect.py cloud --lane stocks15m --shard "$SHARD" --shards 24
+        env:
+          SHARD: ${{ matrix.shard }}
+          DRIVE_TOKEN: ${{ secrets.DRIVE_TOKEN }}
+          DRIVE_FOLDER_ID: ${{ secrets.DRIVE_FOLDER_ID }}
+          DRIVE_CLIENT_ID: ${{ secrets.DRIVE_CLIENT_ID }}
+          DRIVE_CLIENT_SECRET: ${{ secrets.DRIVE_CLIENT_SECRET }}

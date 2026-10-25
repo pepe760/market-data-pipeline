@@ -1,0 +1,30 @@
+name: Crypto option chain snapshots
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '43 * * * *'
+permissions:
+  contents: read
+concurrency:
+  group: broad-crypto-options-writer
+  cancel-in-progress: false
+jobs:
+  collect:
+    if: vars.BROAD_CRYPTO_OPTIONS_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m unittest discover -s tests -p test_broad_collect.py -v
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq rclone
+      - run: python broad_collect.py cloud --lane crypto_options
+        env:
+          DRIVE_TOKEN: ${{ secrets.DRIVE_TOKEN }}
+          DRIVE_FOLDER_ID: ${{ secrets.DRIVE_FOLDER_ID }}
+          DRIVE_CLIENT_ID: ${{ secrets.DRIVE_CLIENT_ID }}
+          DRIVE_CLIENT_SECRET: ${{ secrets.DRIVE_CLIENT_SECRET }}

@@ -77,7 +77,7 @@ def validate_config(c):
     if c.get('schema_version') != 1: raise ValueError('schema')
     allowed = {'schema_version','stocks','crypto','crypto_market','stock_days','crypto_days','max_jobs',
                'max_requests','max_bytes','options_provider','universe_observed_at','universe_sha256',
-               'use_us_directory_snapshot'}
+               'use_us_directory_snapshot','crypto_interval'}
     if set(c) - allowed: raise ValueError('unknown_config_key')
     for key in ('stocks', 'crypto'):
         xs = c.get(key, [])
@@ -86,6 +86,7 @@ def validate_config(c):
         if any(not isinstance(s, str) or not SYMBOL.fullmatch(s) for s in xs):
             raise ValueError('symbol')
     if c.get('crypto_market', 'spot') not in ('spot', 'um'): raise ValueError('market')
+    if c.get('crypto_interval','15m') not in ('15m','1h'):raise ValueError('interval')
     for key, default, maximum in [('stock_days', 21, 30), ('crypto_days', 2, 3650),
                                   ('max_jobs', 25, 500), ('max_requests', 60, 1000),
                                   ('max_bytes', 64000000, 1000000000)]:
@@ -167,32 +168,36 @@ def tasks(config, asof):
     for days_ago in range(config.get('crypto_days', 2), 0, -1):
         day = asof.date() - dt.timedelta(days=days_ago)
         for symbol in sorted(config.get('crypto', [])):
-            result.append({'kind': 'crypto', 'symbol': symbol, 'date': str(day), 'market': market})
+            item={'kind': 'crypto', 'symbol': symbol, 'date': str(day), 'market': market}
+            if config.get('crypto_interval','15m')!='15m':item['interval']=config['crypto_interval']
+            result.append(item)
     for task in result: task['id'] = sha(json.dumps(task, sort_keys=True).encode())
     return result
 
 
 def bar(ts, values, task, observed):
+    step={'15m':900,'1h':3600}[task.get('interval','15m')]
     if len(values) != 5: raise ValueError('ohlcv')
     o, h, l, c, v = [float(x) for x in values]
     if not all(math.isfinite(x) for x in (o, h, l, c, v)): raise ValueError('nonfinite')
     if min(o, h, l, c) <= 0 or v < 0 or h < max(o, l, c) or l > min(o, h, c):
         raise ValueError('invalid_market')
     start = dt.datetime.fromtimestamp(ts, UTC)
-    if start + dt.timedelta(seconds=STEP) > dt.datetime.fromisoformat(observed):
+    if start + dt.timedelta(seconds=step) > dt.datetime.fromisoformat(observed):
         raise ValueError('unfinished')
     return {'source': 'Yahoo/chart' if task['kind'] == 'stocks' else 'Binance/public-archive',
             'venue': 'US_VENDOR_CONSOLIDATION_UNVERIFIED' if task['kind'] == 'stocks' else 'BINANCE_' + task['market'],
             'symbol': task['symbol'], 'asset': task['kind'], 'bar_start': start.isoformat(),
-            'bar_end': (start + dt.timedelta(seconds=STEP)).isoformat(),
-            'available_at': observed, 'interval_seconds': STEP,
+            'bar_end': (start + dt.timedelta(seconds=step)).isoformat(),
+            'available_at': observed, 'interval_seconds': step,
             'open': o, 'high': h, 'low': l, 'close': c, 'volume': v,
             'adjustment': 'VENDOR_UNADJUSTED_REQUEST_NOT_RAW_CERTIFIED' if task['kind'] == 'stocks' else 'EXCHANGE_NATIVE',
             'qualification': 'RESEARCH_ONLY_UNVERIFIED', 'executable_quote': False}
 
 
 def parse_crypto(blob, task, observed):
-    filename = f"{task['symbol']}-15m-{task['date']}.csv"
+    interval=task.get('interval','15m');step={'15m':900,'1h':3600}[interval]
+    filename = f"{task['symbol']}-{interval}-{task['date']}.csv"
     with zipfile.ZipFile(io.BytesIO(blob)) as z:
         entries = z.infolist()
         if len(entries) != 1 or entries[0].filename != filename or entries[0].file_size > 12_000_000:
@@ -200,23 +205,23 @@ def parse_crypto(blob, task, observed):
         if entries[0].external_attr >> 16 & 0o170000 == 0o120000: raise SourceError('SYMLINK')
         text = z.read(filename).decode()
     start = int(dt.datetime.fromisoformat(task['date']).replace(tzinfo=UTC).timestamp())
-    expected = set(range(start, start + 86400, STEP))
+    expected = set(range(start, start + 86400, step))
     saved, rejected, seen = [], [], set()
     for i, row in enumerate(csv.reader(io.StringIO(text))):
         if i == 0 and row and row[0] == 'open_time': continue
         try:
             if len(row) != 12: raise ValueError('schema')
             raw = int(row[0]); divisor = 1_000_000 if raw >= 10**15 else 1000
-            if raw % (divisor * STEP): raise ValueError('grid')
+            if raw % (divisor * step): raise ValueError('grid')
             ts = raw // divisor
             close_raw = int(row[6])
-            if close_raw != raw + STEP * divisor - 1: raise ValueError('close_clock')
+            if close_raw != raw + step * divisor - 1: raise ValueError('close_clock')
             if ts not in expected or ts in seen: raise ValueError('date_or_duplicate')
             item = bar(ts, [*row[1:5], row[5]], task, observed)
             seen.add(ts); saved.append(item)
         except (ValueError, TypeError, OverflowError) as exc:
             rejected.append({'row': i, 'reason': str(exc) if str(exc) in ('schema','grid','close_clock','date_or_duplicate','unfinished','nonfinite','invalid_market') else 'INVALID_ROW'})
-    return saved, {'expected': 96, 'saved': len(saved), 'missing': sorted(expected - seen), 'rejected': rejected}
+    return saved, {'expected': 86400//step, 'saved': len(saved), 'missing': sorted(expected - seen), 'rejected': rejected}
 
 
 def parse_stocks(blob, task, observed):
@@ -245,8 +250,10 @@ def parse_stocks(blob, task, observed):
 def fetch_task(task, dest, http):
     if task['kind'] == 'crypto':
         market = 'spot' if task['market'] == 'spot' else 'futures/um'
-        file = f"{task['symbol']}-15m-{task['date']}.zip"
-        url = f"https://data.binance.vision/data/{market}/daily/klines/{task['symbol']}/15m/{file}"
+        interval=task.get('interval','15m')
+        if interval not in ('15m','1h'):raise ValueError('interval')
+        file = f"{task['symbol']}-{interval}-{task['date']}.zip"
+        url = f"https://data.binance.vision/data/{market}/daily/klines/{task['symbol']}/{interval}/{file}"
         blob = http.get(url)
         (dest / 'raw.zip').write_bytes(blob)
         checksum = http.get(url + '.CHECKSUM')
