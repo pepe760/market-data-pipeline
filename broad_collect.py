@@ -192,7 +192,7 @@ def transfer(root,prefix,mode):
                 imported+=core.import_batch(batch,root/'catalog.sqlite')
             core.save(root/'SYNC_STATUS.json',{'checked_at':core.now().isoformat(),'imported':imported,'incomplete':incomplete,'lane':prefix})
 
-def cloud(lane,shard=0,shards=24):
+def cloud(lane,shard=0,shards=24,date=None):
     import pipeline as p
     import subprocess
     if lane not in ('crypto1h','stocks15m','crypto_options') or not 0<=shard<shards<=64:raise ValueError('scope')
@@ -216,10 +216,9 @@ def cloud(lane,shard=0,shards=24):
                     validate(config)
                     if identities.get('classification_version')!=2:raise ValueError('native crypto classification required')
                 # Revisit yesterday and the preceding UTC day for one-day catch-up.
-                ages=(2,1) if lane=='crypto1h' else (1,)
+                dates=[date] if date else [str(core.now().date()-dt.timedelta(days=age)) for age in ((2,1) if lane=='crypto1h' else (1,))]
                 outcomes=[]
-                for age in ages:
-                    day=str(core.now().date()-dt.timedelta(days=age))
+                for day in dates:
                     out,q=collect(config,root,lane,date=day,shard=shard,shards=shards)
                     outcomes.append(q['status'])
                 q['status']='COMPLETE' if all(x=='COMPLETE' for x in outcomes) else 'PARTIAL'
@@ -240,7 +239,7 @@ if __name__=='__main__':
     ap.add_argument('--root',type=Path);ap.add_argument('--lane',choices=['stocks15m','crypto1h','crypto_options']);ap.add_argument('--config',type=Path);ap.add_argument('--date');ap.add_argument('--shard',type=int,default=0);ap.add_argument('--shards',type=int,default=24)
     a=ap.parse_args()
     if a.mode=='cloud':
-        q=cloud(a.lane,a.shard,a.shards);raise SystemExit(0 if q['status']=='COMPLETE' else 2)
+        q=cloud(a.lane,a.shard,a.shards,a.date or None);raise SystemExit(0 if q['status']=='COMPLETE' else 2)
     if a.root is None or not a.root.is_absolute():raise ValueError('private absolute root')
     if a.mode=='sync':
         a.root.mkdir(parents=True,exist_ok=True);prefix='stocks15m/part%02d'%a.shard if a.lane=='stocks15m' else a.lane

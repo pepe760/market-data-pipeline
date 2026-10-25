@@ -1,6 +1,11 @@
 name: Broad crypto hourly bars
 on:
   workflow_dispatch:
+    inputs:
+      date:
+        description: 'Optional single completed UTC date YYYY-MM-DD; blank uses normal two-day catch-up'
+        required: false
+        type: string
   schedule:
     - cron: '29 4 * * *'
 permissions:
@@ -23,8 +28,9 @@ jobs:
       - run: pip install -r intraday-requirements.txt
       - run: python -m unittest discover -s tests -v
       - run: sudo apt-get update -qq && sudo apt-get install -y -qq rclone
-      - run: python broad_collect.py cloud --lane crypto1h
+      - run: python broad_collect.py cloud --lane crypto1h --date "$TARGET_DATE"
         env:
+          TARGET_DATE: ${{ inputs.date }}
           DRIVE_TOKEN: ${{ secrets.DRIVE_TOKEN }}
           DRIVE_FOLDER_ID: ${{ secrets.DRIVE_FOLDER_ID }}
           DRIVE_CLIENT_ID: ${{ secrets.DRIVE_CLIENT_ID }}
