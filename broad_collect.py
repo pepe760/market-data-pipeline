@@ -13,11 +13,14 @@ def new_batch(root):
 def finite(value):return isinstance(value,(int,float)) and not isinstance(value,bool) and math.isfinite(value)
 
 def validate(config):
-    if config.get('schema_version')!=1 or set(config)-{'schema_version','stocks','crypto','crypto_candidates','crypto_target','observed_at','qualification','raw_directory_complete','no_credentials'}:
+    if config.get('schema_version')!=1 or set(config)-{'schema_version','stocks','crypto','crypto_candidates','crypto_target','observed_at','qualification','raw_directory_complete','no_credentials','crypto_asset_ids'}:
         raise ValueError('config schema')
     for key in ('stocks','crypto','crypto_candidates'):
         xs=config.get(key,[])
         if not isinstance(xs,list) or len(xs)>20000 or len(xs)!=len(set(xs)) or any(not isinstance(x,str) or not core.SYMBOL.fullmatch(x) for x in xs):raise ValueError('universe')
+    if 'crypto_asset_ids' in config:
+        ids=config['crypto_asset_ids']
+        if not isinstance(ids,dict) or set(ids)!=set(config.get('crypto',[])) or any(not isinstance(x,str) or not __import__('re').fullmatch('[a-z0-9-]{1,150}',x) for x in ids.values()) or len(set(ids.values()))!=len(ids):raise ValueError('asset identity mapping')
     return config
 
 def archive_task(task,archive,http):
@@ -50,10 +53,14 @@ def collect(config,root,lane,date=None,shard=0,shards=24,qualify=False,max_reque
         with zipfile.ZipFile(out/'raw_bundle.zip','w',compression=zipfile.ZIP_DEFLATED,compresslevel=6) as raw:
             for symbol in symbols:
                 task=({'kind':'crypto','market':'spot','symbol':symbol,'date':date,'interval':'1h'} if lane=='crypto1h' else {'kind':'stocks','symbol':symbol,'grid':grid})
+                if lane=='crypto1h' and not qualify and 'crypto_asset_ids' in config:
+                    task.update(asset_id=config['crypto_asset_ids'][symbol],asset_classification_version=2)
                 key=core.sha(json.dumps(task,sort_keys=True).encode())
                 if key in state['completed'] and not qualify:already+=1;continue
                 try:
                     bars,q=archive_task(task,raw,http)
+                    if 'asset_id' in task:
+                        for row in bars:row.update(asset_id=task['asset_id'],asset_classification_available_at=config['observed_at'],asset_classification='CURRENT_PUBLIC_METADATA_CRYPTO_V2_NOT_PIT_CERTIFIED')
                     if q['status']=='COMPLETE':
                         rows+=bars;selected.append(symbol);new.append(key)
                     else:rows+=bars
@@ -202,6 +209,12 @@ def cloud(lane,shard=0,shards=24):
                 p.rclone('copyto',remote+'config/broad_universe.json',root/'config.json')
                 config=json.loads((root/'config.json').read_text())
                 if lane=='crypto1h' and len(config.get('crypto',[]))<300:raise ValueError('requires at least300 qualified crypto')
+                if lane=='crypto1h':
+                    p.rclone('copyto',remote+'config/broad_crypto_asset_ids.json',root/'asset_ids.json')
+                    identities=json.loads((root/'asset_ids.json').read_text())
+                    config['crypto_asset_ids']=identities['asset_ids']
+                    validate(config)
+                    if identities.get('classification_version')!=2:raise ValueError('native crypto classification required')
                 # Revisit yesterday and the preceding UTC day for one-day catch-up.
                 ages=(2,1) if lane=='crypto1h' else (1,)
                 outcomes=[]
