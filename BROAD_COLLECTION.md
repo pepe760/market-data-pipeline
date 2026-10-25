@@ -105,6 +105,13 @@ batches; globbed bars overlap across retrieval vintages. Deduplicate intentional
 by instrument/venue/interval/bar_start and choose availability vintage explicitly.
 No source is upgraded to trading/PIT/OOS certification by checksum or CI success.
 
+`broad_local_sync.py fast --root /absolute/private/broad` imports only new
+crypto/option batches; `stocks` imports the24stock shard prefixes. It caps each
+lane at100new batches per pass, keeps remaining/uncommitted counts, and does not
+rehash all history every hour. Latest private config is stored as`universe.json`.
+Local scheduled use requires the Mac, user session and network; it does not drive
+the cloud collector. Planned local slots: fast eachhour:58, stocks18:17/22:17HKT.
+
 Official sources:
 - https://github.com/binance/binance-public-data
 - https://docs.deribit.com/articles/options-data-collection-best-practices
