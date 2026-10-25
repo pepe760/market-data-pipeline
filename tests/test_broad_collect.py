@@ -14,7 +14,10 @@ def hourly(task,micro=False,omit=False):
         stamp=(start+3600*i)*div
         rows.append(','.join(map(str,[stamp,10,12,9,11,50,stamp+3600*div-1,500,5,20,200,0])))
     buf=io.BytesIO()
-    with zipfile.ZipFile(buf,'w') as z:z.writestr(task['symbol']+'-1h-'+task['date']+'.csv','\n'.join(rows))
+    # Both simulated HTTP responses must contain identical ZIP bytes even when
+    # the archive and its checksum are requested across a wall-clock boundary.
+    entry=zipfile.ZipInfo(task['symbol']+'-1h-'+task['date']+'.csv',date_time=(2025,1,1,0,0,0))
+    with zipfile.ZipFile(buf,'w') as z:z.writestr(entry,'\n'.join(rows))
     return buf.getvalue()
 
 class Tests(unittest.TestCase):

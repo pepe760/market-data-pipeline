@@ -1,6 +1,11 @@
 name: Broad stock 15-minute bars
 on:
   workflow_dispatch:
+    inputs:
+      shards:
+        description: 'Optional JSON shard numbers for bounded recovery, e.g. [21]; blank runs all 24'
+        required: false
+        type: string
   schedule:
     - cron: '13 8 * * 2-6'
 permissions:
@@ -17,7 +22,7 @@ jobs:
       fail-fast: false
       max-parallel: 2
       matrix:
-        shard: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]
+        shard: ${{ fromJSON(inputs.shards || '[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]') }}
     steps:
       - uses: actions/checkout@v4
         with:
