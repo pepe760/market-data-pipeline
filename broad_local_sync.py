@@ -44,6 +44,7 @@ if __name__=='__main__':
         pipeline.rclone('copyto',pipeline.remote(local=True)+'config/broad_universe.json',args.root/'universe.json')
         from broad_collect import validate
         validate(json.loads((args.root/'universe.json').read_text()))
+        pipeline.rclone('copyto',pipeline.remote(local=True)+'broad/crypto1h/qualification_overrides.json',args.root/'crypto1h'/'qualification_overrides.json')
     except Exception as exc:failed.append({'lane':'universe','error_class':type(exc).__name__})
     for prefix in prefixes:
         try:result.append(sync(args.root/prefix,prefix))

@@ -44,6 +44,25 @@ and workflow concurrency; failure of one does not cancel the others.
 
 ## Crypto qualification / semantics
 
+### Classification correction — supersedes initial alphabetical cohort acceptance
+
+Initial300 technically complete archive pairs included tokenized equities
+(AAPLB/NFLXB etc.). That cohort is NOT accepted as300 different classified crypto
+assets. Original bytes/manifests are preserved; the three earlier batches are
+listed in private`broad/crypto1h/qualification_overrides.json`, not silently erased.
+`refine_crypto_universe.py` resolves candidates against current public coin-name/ID
+metadata, excludes tokenized-stock/ETF/commodity names, prioritizes the original
+major coins and all seven option underlyings, and requires300distinct public asset
+IDs plus24validhourly bars. The mapping remains provisional symbol/name matching,
+not exchange-contract or historical-PIT identity certification. Current ranking
+is a collection-order choice only, not a trading signal or historical universe.
+
+Cloud crypto now requires a unique-ID mapping in private
+`config/broad_crypto_asset_ids.json`; classification version2 becomes part of task
+identity so old unclassified checkpoints cannot falsely certify the new cohort.
+New bars retain asset ID and classification availability separately from bar and
+retrieval clocks. Legacy raw cohorts remain quarantined until explicitly filtered.
+
 Complete official archive listing:3,749 symbols /696 filtered USDT candidates.
 The selected300 must each have24 valid1h bars for a recent complete UTC day and
 pass the vendor archive CHECKSUM. Selection is first300 qualified alphabetical
