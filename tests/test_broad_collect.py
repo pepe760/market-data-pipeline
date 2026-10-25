@@ -43,7 +43,7 @@ class Tests(unittest.TestCase):
     def test_eligible_pair_filters(self):
         self.assertTrue(u.eligible_crypto('BTCUSDT'));self.assertFalse(u.eligible_crypto('USDCUSDT'));self.assertFalse(u.eligible_crypto('BTCUPUSDT'))
     def test_option_metadata_identity_and_currency(self):
-        meta=[{'instrument_name':'BTC-X-P','kind':'option','is_active':True,'expiration_timestamp':2000000000000,'base_currency':'BTC','quote_currency':'USD','settlement_currency':'BTC','strike':50000,'option_type':'put','contract_size':1}]
+        meta=[{'instrument_name':'BTC-X-P','kind':'option','is_active':True,'expiration_timestamp':2000000000000,'base_currency':'BTC','quote_currency':'BTC','counter_currency':'USD','instrument_type':'reversed','settlement_currency':'BTC','strike':50000,'option_type':'put','contract_size':1}]
         summary=[{'instrument_name':'BTC-X-P','creation_timestamp':1704067200000,'bid_price':0.01,'ask_price':0.02,'underlying_price':60000}]
         rows,unknown=b.option_rows(meta,summary*2,'2024-01-01T00:00:02+00:00')
         self.assertEqual(len(rows),1);self.assertFalse(unknown);self.assertEqual(rows[0]['premium_currency'],'BTC');self.assertEqual(rows[0]['strike_currency'],'USD');self.assertIsNone(rows[0]['greeks']);self.assertFalse(rows[0]['executable_quote'])

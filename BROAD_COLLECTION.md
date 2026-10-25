@@ -74,7 +74,7 @@ includes bid/ask,mark,mark IV,OI,24hvolume and vendor underlying/index.
 
 - Hourly snapshots start prospectively when deployed; NOT historical hourly BBO.
 - Observed/summary clocks distinct; summary time is NOT bid/ask exchange clock.
-- Premium currency is settlement currency; strike currency is instrument quote
+- Premium currency is settlement currency; strike currency is instrument counter
   currency. InverseBTC premiums must NOT be mistaken for USD premiums.
 - `mark_iv_vendor_percent` is percent. Mark/IV are not trades or fills.
 - No native Greek/size endpoint collected: `greeks=null`, `bid_ask_size=null`.
