@@ -1,0 +1,34 @@
+name: Intraday collection run guard
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '37 4,8,12 * * *'
+  workflow_run:
+    workflows: ['Private 15-minute research archive', 'Daily collection', 'Daily option snapshots']
+    types: [completed]
+    branches: [main]
+permissions:
+  contents: read
+  actions: write
+concurrency:
+  group: intraday15m-liveness-guard
+  cancel-in-progress: false
+jobs:
+  check:
+    if: vars.INTRADAY15M_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Guard unit tests
+        run: python -m unittest discover -s tests -p test_intraday_run_guard.py -v
+      - name: Check completed run or request bounded recovery
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python intraday_run_guard.py

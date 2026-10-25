@@ -1,5 +1,33 @@
 # Independent 15-minute archive — v1
 
+## Run liveness guard — 2026-10-25
+
+`intraday_guard.yml` independently checks the collector every day at12:37,
+16:37 and20:37 HKT, including weekends, and after the collector/old daily
+price/option workflows finish. Original daily workflows and data config unchanged.
+It requires today's main-branch collector success after02:19UTC (10:19HKT),
+with a two-hour grace. Collector success means configured bar tasks plus private
+Drive hash readback, NOT options/Greeks or independent price certification.
+
+- An active collector is never duplicated; >90min active fails the guard.
+- Missing/failed runs can dispatch `intraday15m.yml` on main only, max2 manual
+  attempts per UTC collection date. A dispatch is PENDING, not success.
+- Disabled collector, truncated API history, permissions/network errors, stale
+  active runs and exhausted retries fail visibly in Actions. Email/push delivery
+  depends on the owner's GitHub notification settings; no notification guarantee.
+- Guard uses the ephemeral same-repo `GITHUB_TOKEN`, `actions:write` and
+  `contents:read`; no new PAT, Drive credentials, data/artifact access or trades.
+- Unit tests cover weekends, stale success, activity, branches and bounded retries.
+  Main checkout is fixed; no PR artifacts are executed by workflow_run.
+- Both schedules depend on GitHub, so a GitHub-wide scheduler/runner outage can
+  affect both. This reduces silent misses; it is not an external uptime guarantee.
+
+Sources: https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow
+and https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows
+
+The prototype notes below are historical acceptance; cloud activation was later
+authorized and recorded in William's task deployment receipts.
+
 Built 2026-10-25 for William. This is ingestion engineering, not a strategy study.
 No existing daily collector, PIT database, option snapshots, RSR monitor or paper
 account is replaced. No subscription, purchase, trade, push or deployment is made.
