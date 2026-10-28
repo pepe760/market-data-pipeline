@@ -128,36 +128,63 @@ def collect_options(root):
     with (root/'.writer.lock').open('a') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB);out=new_batch(root)
         cache=root/'instrument_cache.json'
-        cache_fresh=cache.exists() and core.now().timestamp()-cache.stat().st_mtime<86400
-        if cache_fresh:
-            b=cache.read_bytes()
-        else:
-            b=http.get('https://www.deribit.com/api/v2/public/get_instruments?currency=any&kind=option&expired=false')
         raw_responses={}
         def stash(name,blob):
             raw_responses[name]=blob
             with zipfile.ZipFile(out/'raw_bundle.zip','a',compression=zipfile.ZIP_DEFLATED,compresslevel=6) as archive:
                 archive.writestr(name,blob)
             core.save(out/'raw_response_manifest.json',{n:core.sha(v) for n,v in raw_responses.items()})
-        stash('instruments.json',b);obj=json.loads(b)
-        if 'error' in obj or not isinstance(obj.get('result'),list):raise core.SourceError('INSTRUMENT_SCHEMA')
-        if not cache_fresh:cache.write_bytes(b)
-        metadata=obj['result'];currencies=sorted({r['settlement_currency'] for r in metadata if r.get('kind')=='option' and r.get('is_active')})
-        if not 1<=len(currencies)<=10:raise ValueError('unexpected settlement universe')
+        def instruments(name):
+            # File timestamps can describe transport, not metadata observation.
+            # Always query this snapshot; the cache remains an output for compatibility.
+            blob=http.get('https://www.deribit.com/api/v2/public/get_instruments?currency=any&kind=option&expired=false')
+            stash(name,blob);obj=json.loads(blob)
+            if not isinstance(obj,dict) or 'error' in obj or not isinstance(obj.get('result'),list):raise core.SourceError('INSTRUMENT_SCHEMA')
+            metadata=obj['result']
+            if any(not isinstance(r,dict) for r in metadata):raise core.SourceError('INSTRUMENT_SCHEMA')
+            active=[r for r in metadata if r.get('kind')=='option' and r.get('is_active')]
+            names=set()
+            for row in active:
+                name=row.get('instrument_name')
+                if (not isinstance(name,str) or not name or name in names or
+                    not finite(row.get('expiration_timestamp')) or row['expiration_timestamp']<=0 or
+                    not finite(row.get('strike')) or row['strike']<=0 or row.get('option_type') not in ('call','put') or
+                    any(not isinstance(row.get(key),str) or not row[key] for key in ('base_currency','quote_currency','settlement_currency'))):
+                    raise core.SourceError('INSTRUMENT_SCHEMA')
+                names.add(name)
+            currencies=sorted({r['settlement_currency'] for r in active})
+            if not 1<=len(currencies)<=10:raise ValueError('unexpected settlement universe')
+            if any(not isinstance(currency,str) or not __import__('re').fullmatch('[A-Z0-9]{2,15}',currency) for currency in currencies):raise ValueError('currency')
+            cache.write_bytes(blob)
+            return metadata,currencies
         summaries=[];counts={}
-        for currency in currencies:
-            if not __import__('re').fullmatch('[A-Z0-9]{2,15}',currency):raise ValueError('currency')
-            b=http.get('https://www.deribit.com/api/v2/public/get_book_summary_by_currency?'+urllib.parse.urlencode({'currency':currency,'kind':'option'}))
-            stash(currency+'_summary.json',b);d=json.loads(b)
-            if 'error' in d or not isinstance(d.get('result'),list):raise core.SourceError('SUMMARY_SCHEMA')
-            summaries+=d['result'];counts[currency]=len(d['result'])
+        def fetch_summaries(currencies):
+            # At most ten distinct currency reads plus two metadata reads (<=12).
+            if len(set(counts)|set(currencies))>10:raise ValueError('unexpected settlement universe')
+            for currency in currencies:
+                if currency in counts:continue
+                blob=http.get('https://www.deribit.com/api/v2/public/get_book_summary_by_currency?'+urllib.parse.urlencode({'currency':currency,'kind':'option'}))
+                stash(currency+'_summary.json',blob);obj=json.loads(blob)
+                if not isinstance(obj,dict) or 'error' in obj or not isinstance(obj.get('result'),list):raise core.SourceError('SUMMARY_SCHEMA')
+                summaries.extend(obj['result']);counts[currency]=len(obj['result'])
+        metadata,currencies=instruments('instruments.json')
+        fetch_summaries(currencies)
         observed=core.now().isoformat();rows,unknown=option_rows(metadata,summaries,observed)
+        initial_unknown=len(unknown);refreshed=bool(unknown)
+        if refreshed:
+            # Listings can change between the first metadata and summary reads.
+            # Reconcile once, retaining both raw metadata observations as evidence.
+            metadata,currencies=instruments('instruments_refresh.json')
+            fetch_summaries(currencies)
+            observed=core.now().isoformat();rows,unknown=option_rows(metadata,summaries,observed)
         if not rows:raise core.SourceError('NO_OPTION_ROWS')
         with gzip.open(out/'options.jsonl.gz','wt') as f:
             for r in rows:f.write(json.dumps(r,allow_nan=False)+'\n')
         q={'schema_version':1,'lane':'crypto_options','created_at':observed,'status':'COMPLETE' if len(rows)>=300 and not unknown else 'PARTIAL',
           'contracts':len(rows),'underlying_assets':sorted({r['underlying_asset'] for r in rows}),
-          'settlement_currencies':currencies,'summary_counts':counts,'unknown_metadata':unknown,
+          'settlement_currencies':sorted(counts),'summary_counts':counts,'unknown_metadata':unknown,
+          'metadata_policy':'FRESH_EACH_SNAPSHOT_REFRESH_ON_UNKNOWN_ONCE_NO_CACHE_FALLBACK',
+          'metadata_refreshed':refreshed,'initial_unknown_metadata_count':initial_unknown,
           'bbo_flagged':sum(bool(r['flags']) for r in rows),'greek_rows':0,
           'qualification':'CURRENT_SUMMARY_NOT_HOURLY_HISTORY_NOT_EXECUTABLE_QUOTES; MARK_IV_NOT_GREEKS; 300 contracts is not300 coins',
           'independent_crosscheck':'PENDING','requests':http.used_calls}
