@@ -53,8 +53,8 @@ class Tests(unittest.TestCase):
         summary[0]['ask_price']=0.001;rows,_=b.option_rows(meta,summary,'2024-01-01T00:00:02+00:00');self.assertIn('INVALID_BBO',rows[0]['flags'])
     def test_unknown_metadata_not_invented(self):
         rows,unknown=b.option_rows([],[{'instrument_name':'UNKNOWN'}],'2024-01-01T00:00:00+00:00');self.assertEqual(rows,[]);self.assertEqual(unknown,['UNKNOWN'])
-    def test_option_raw_roundtrip_and_cache_not_rejuvenated(self):
-        import os,time
+    def test_option_raw_roundtrip_and_fresh_metadata_each_run(self):
+        import time
         metadata={'result':[{'instrument_name':'BTC-X-P','kind':'option','is_active':True,'expiration_timestamp':2000000000000,'base_currency':'BTC','quote_currency':'USD','settlement_currency':'BTC','strike':50000,'option_type':'put','contract_size':1}]}
         summary={'result':[{'instrument_name':'BTC-X-P','creation_timestamp':int(time.time()*1000),'bid_price':0.01,'ask_price':0.02}]}
         class Fake:
@@ -68,8 +68,10 @@ class Tests(unittest.TestCase):
             with zipfile.ZipFile(out/'raw_bundle.zip') as z:
                 hashes=json.loads((out/'raw_response_manifest.json').read_text())
                 self.assertTrue(all(hashlib.sha256(z.read(n)).hexdigest()==h for n,h in hashes.items()))
-            cache=root/'instrument_cache.json';t=time.time()-1000;os.utime(cache,(t,t));before=cache.stat().st_mtime
-            out,q=b.collect_options(root);self.assertEqual(q['requests'],1);self.assertEqual(cache.stat().st_mtime,before)
+            cache=root/'instrument_cache.json';cache.write_text('{"result":[]}')
+            out,q=b.collect_options(root);self.assertEqual(q['requests'],2)
+            self.assertEqual(json.loads(cache.read_text()),metadata)
+            self.assertFalse(q['metadata_refreshed']);self.assertEqual(q['initial_unknown_metadata_count'],0)
     @unittest.skipUnless(importlib.util.find_spec('pandas'),'optional dataframe dependency')
     def test_stale_sharadar_not_alias_spliced(self):
         import pandas as pd
