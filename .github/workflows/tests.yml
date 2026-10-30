@@ -5,6 +5,9 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        requirements: [requirements.txt, intraday-requirements.txt]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -13,5 +16,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install -r requirements.txt
+      - run: pip install -r "$REQUIREMENTS_FILE"
+        env:
+          REQUIREMENTS_FILE: ${{ matrix.requirements }}
       - run: python -m unittest discover -s tests -v

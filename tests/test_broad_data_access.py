@@ -1,4 +1,5 @@
 import copy
+import importlib.util
 import tempfile
 import unittest
 from pathlib import Path
@@ -36,6 +37,7 @@ class Tests(unittest.TestCase):
         self.batch.mkdir()
 
     def seal(self, data):
+        if not importlib.util.find_spec('pyarrow'):self.skipTest('optional parquet dependency; full CI installs intraday requirements')
         data.to_parquet(self.batch / 'bars.parquet', index=False)
         (self.batch / 'raw.bin').write_bytes(b'original immutable exchange response')
         c.seal(self.batch)

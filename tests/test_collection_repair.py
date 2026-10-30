@@ -1,4 +1,5 @@
 import copy
+import importlib.util
 import datetime as dt
 import io
 import json
@@ -89,6 +90,7 @@ class RepairTests(unittest.TestCase):
         self.assertEqual(q['missing'],[]);self.assertEqual(q['rejected'],[])
         self.assertTrue(bars[-1]['close_clock_exception']);self.assertEqual(bars[-1]['raw_close_timestamp'],start+3*3600*1000000-1000)
 
+    @unittest.skipUnless(importlib.util.find_spec('pyarrow'),'optional parquet dependency; full CI installs intraday requirements')
     def test_partial_stock_observations_never_enter_complete_checkpoint(self):
         grid=self.task['grid']
         class HTTP:
@@ -107,6 +109,7 @@ class RepairTests(unittest.TestCase):
             self.assertEqual(len(json.loads((root/'checkpoint.json').read_text())['completed']),1)
             c.verify(out)
 
+    @unittest.skipUnless(importlib.util.find_spec('pyarrow'),'optional parquet dependency; full CI installs intraday requirements')
     def test_dated_identity_clock_is_bound_to_checkpoint_and_unchanged_clock_resumes(self):
         class HTTP:
             used_calls=used_bytes=0
