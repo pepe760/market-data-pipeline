@@ -4,6 +4,24 @@ from pathlib import Path
 import intraday15m as core
 import pipeline
 
+def record_identity_policies(overrides_path,db):
+    """Append validated metadata only; never rewrite batch prices or intercept SQL."""
+    from broad_data_access import validate_identity_policy
+    payload=overrides_path.read_bytes();obj=json.loads(payload)
+    policies=obj.get('asset_identity_policies',[])
+    if not isinstance(policies,list):raise ValueError('identity policies')
+    validated=[validate_identity_policy(p) for p in policies]
+    db.parent.mkdir(parents=True,exist_ok=True)
+    with (db.parent/'.writer.lock').open('a') as lock:
+        fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        with sqlite3.connect(db) as conn:
+            conn.execute('CREATE TABLE IF NOT EXISTS asset_identity_policies(sha TEXT PRIMARY KEY,symbol TEXT NOT NULL,policy TEXT NOT NULL,source_sha TEXT NOT NULL,available_at TEXT NOT NULL)')
+            for policy in validated:
+                text=json.dumps(policy,sort_keys=True)
+                conn.execute('INSERT OR IGNORE INTO asset_identity_policies VALUES(?,?,?,?,?)',
+                    (core.sha(text.encode()),policy['symbol'],text,core.sha(payload),policy['observed_at']))
+    return {'policies':len(validated),'metadata_sha256':core.sha(payload),'scope':'METADATA_ONLY; use read_qualified_bars explicitly; arbitrary parquet/SQL reads are not intercepted'}
+
 def pending_batches(remote,known,limit=100):
     names=[x.rstrip('/') for x in remote]
     if len(names)!=len(set(names)) or any(not core.RUN.fullmatch(x) for x in names):raise ValueError('unsafe remote batch listing')
@@ -45,10 +63,11 @@ if __name__=='__main__':
         from broad_collect import validate
         validate(json.loads((args.root/'universe.json').read_text()))
         pipeline.rclone('copyto',pipeline.remote(local=True)+'broad/crypto1h/qualification_overrides.json',args.root/'crypto1h'/'qualification_overrides.json')
+        identity=record_identity_policies(args.root/'crypto1h'/'qualification_overrides.json',args.root/'crypto1h'/'catalog.sqlite')
     except Exception as exc:failed.append({'lane':'universe','error_class':type(exc).__name__})
     for prefix in prefixes:
         try:result.append(sync(args.root/prefix,prefix))
         except Exception as exc:failed.append({'lane':prefix,'error_class':type(exc).__name__})
-    core.save(args.root/(args.group+'_SYNC_RECEIPT.json'),{'checked_at':core.now().isoformat(),'lanes':result,'failures':failed})
+    core.save(args.root/(args.group+'_SYNC_RECEIPT.json'),{'checked_at':core.now().isoformat(),'lanes':result,'failures':failed,'identity_metadata':locals().get('identity')})
     print(json.dumps({'lanes_checked':len(result),'new_imports':sum(x['new_hash_verified_imports'] for x in result),'failed_lanes':len(failed)}))
     raise SystemExit(1 if failed else 0)

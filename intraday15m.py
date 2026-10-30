@@ -27,7 +27,7 @@ import uuid
 import zipfile
 
 UTC = dt.timezone.utc
-VERSION = 'intraday15m-v1'
+VERSION = 'intraday15m-v2'
 STEP = 900
 SYMBOL = re.compile(r'^[A-Z0-9][A-Z0-9.\-^=]{0,24}$')
 RUN = re.compile(r'^\d{8}T\d{6}Z-[a-f0-9]{12}$')
@@ -47,30 +47,46 @@ class SourceError(Exception): pass
 
 
 class HTTP:
-    def __init__(self, calls=60, byte_limit=64_000_000):
+    def __init__(self, calls=60, byte_limit=64_000_000, rate_limit_retries=2, max_retry_after=30):
         self.calls, self.byte_limit, self.used_calls, self.used_bytes = calls, byte_limit, 0, 0
-        self.last = 0.0
+        self.last = 0.0;self.rate_limit_retries=rate_limit_retries;self.max_retry_after=max_retry_after
+        self.retry_events=[]
+
+    def retry_delay(self, value, retry):
+        from email.utils import parsedate_to_datetime
+        delay=None
+        if value:
+            try:
+                delay=float(int(value)) if value.strip().isdigit() else (parsedate_to_datetime(value)-now()).total_seconds()
+            except (ValueError,TypeError,OverflowError):pass
+        delay=max(0,delay) if delay is not None else 2**(retry+1)
+        # Do not retry before a server deadline that exceeds the bounded wait.
+        if delay>self.max_retry_after:raise BudgetStop('HTTP_429_RETRY_AFTER_EXCEEDS_BOUND')
+        return delay
 
     def get(self, url):
-        if self.used_calls >= self.calls or self.used_bytes >= self.byte_limit:
-            raise BudgetStop('budget')
-        time.sleep(max(0, 1.0 - (time.monotonic() - self.last)))
-        self.last = time.monotonic()
-        self.used_calls += 1
-        limit = min(12_000_000, self.byte_limit - self.used_bytes)
-        try:
-            req = urllib.request.Request(url, headers={'User-Agent': 'WilliamResearchArchive/1.0'})
-            with urllib.request.urlopen(req, timeout=25) as response:
-                payload = response.read(limit + 1)
-        except urllib.error.HTTPError as exc:
-            if exc.code in (429, 451):
-                raise BudgetStop('rate_or_region_block') from None
-            raise SourceError('HTTP_' + str(exc.code)) from None
-        except (urllib.error.URLError, TimeoutError):
-            raise SourceError('NETWORK') from None
-        self.used_bytes += len(payload)
-        if len(payload) > limit: raise BudgetStop('response_bytes')
-        return payload
+        for retry in range(self.rate_limit_retries+1):
+            if self.used_calls>=self.calls:raise BudgetStop('REQUEST_BUDGET_EXHAUSTED')
+            if self.used_bytes>=self.byte_limit:raise BudgetStop('BYTE_BUDGET_EXHAUSTED')
+            time.sleep(max(0,1.0-(time.monotonic()-self.last)));self.last=time.monotonic()
+            self.used_calls+=1
+            limit=min(12_000_000,self.byte_limit-self.used_bytes)
+            try:
+                req=urllib.request.Request(url,headers={'User-Agent':'WilliamResearchArchive/1.0'})
+                with urllib.request.urlopen(req,timeout=25) as response:payload=response.read(limit+1)
+            except urllib.error.HTTPError as exc:
+                if exc.code==451:raise BudgetStop('HTTP_451_REGION_BLOCK') from None
+                if exc.code==429:
+                    if retry>=self.rate_limit_retries:raise BudgetStop('HTTP_429_RETRIES_EXHAUSTED') from None
+                    if self.used_calls>=self.calls:raise BudgetStop('REQUEST_BUDGET_EXHAUSTED') from None
+                    delay=self.retry_delay(exc.headers.get('Retry-After') if exc.headers else None,retry)
+                    self.retry_events.append({'reason':'HTTP_429','delay_seconds':delay})
+                    time.sleep(delay);continue
+                raise SourceError('HTTP_'+str(exc.code)) from None
+            except (urllib.error.URLError,TimeoutError):raise SourceError('NETWORK') from None
+            self.used_bytes+=len(payload)
+            if len(payload)>limit:raise BudgetStop('RESPONSE_BYTES_EXCEEDED')
+            return payload
 
 
 def validate_config(c):
@@ -196,6 +212,7 @@ def bar(ts, values, task, observed):
 
 
 def parse_crypto(blob, task, observed):
+    import crypto_lifecycle as lifecycle
     interval=task.get('interval','15m');step={'15m':900,'1h':3600}[interval]
     filename = f"{task['symbol']}-{interval}-{task['date']}.csv"
     with zipfile.ZipFile(io.BytesIO(blob)) as z:
@@ -205,7 +222,9 @@ def parse_crypto(blob, task, observed):
         if entries[0].external_attr >> 16 & 0o170000 == 0o120000: raise SourceError('SYMLINK')
         text = z.read(filename).decode()
     start = int(dt.datetime.fromisoformat(task['date']).replace(tzinfo=UTC).timestamp())
-    expected = set(range(start, start + 86400, step))
+    policy_task=dict(task,kind='crypto',market=task.get('market','spot'))
+    policy=lifecycle.lifecycle_policy(policy_task)
+    expected=set(policy['expected_slots'])
     saved, rejected, seen = [], [], set()
     for i, row in enumerate(csv.reader(io.StringIO(text))):
         if i == 0 and row and row[0] == 'open_time': continue
@@ -215,35 +234,76 @@ def parse_crypto(blob, task, observed):
             if raw % (divisor * step): raise ValueError('grid')
             ts = raw // divisor
             close_raw = int(row[6])
-            if close_raw != raw + step * divisor - 1: raise ValueError('close_clock')
+            clock=lifecycle.close_clock_policy(policy_task,raw,close_raw,divisor)
+            if not clock['allowed']: raise ValueError('close_clock')
             if ts not in expected or ts in seen: raise ValueError('date_or_duplicate')
             item = bar(ts, [*row[1:5], row[5]], task, observed)
+            if clock['close_clock_exception']:
+                item.update({k:v for k,v in clock.items() if k!='allowed'})
             seen.add(ts); saved.append(item)
         except (ValueError, TypeError, OverflowError) as exc:
             rejected.append({'row': i, 'reason': str(exc) if str(exc) in ('schema','grid','close_clock','date_or_duplicate','unfinished','nonfinite','invalid_market') else 'INVALID_ROW'})
-    return saved, {'expected': 86400//step, 'saved': len(saved), 'missing': sorted(expected - seen), 'rejected': rejected}
+    return saved, {'expected':len(expected),'saved':len(saved),'missing':sorted(expected-seen),'rejected':rejected,
+                   'lifecycle_status':policy['status'],'retired_not_expected_slots':len(policy['retired_not_expected_slots']),
+                   'lifecycle_policy_version':policy['policy_version'],'lifecycle_source':policy['source_url']}
 
 
 def parse_stocks(blob, task, observed):
-    data = json.loads(blob)['chart']
-    if data.get('error') or not data.get('result'): raise SourceError('VENDOR_ERROR')
-    result = data['result'][0]
-    if result.get('meta', {}).get('symbol') != task['symbol'].replace('.', '-'):
+    payload=json.loads(blob)
+    if not isinstance(payload,dict) or not isinstance(payload.get('chart'),dict):raise SourceError('STOCK_SCHEMA')
+    data=payload['chart']
+    if data.get('error'):raise SourceError('VENDOR_ERROR')
+    results=data.get('result')
+    if not isinstance(results,list) or len(results)!=1 or not isinstance(results[0],dict):raise SourceError('STOCK_SCHEMA')
+    result=results[0]
+    if not isinstance(result.get('meta'),dict):raise SourceError('STOCK_SCHEMA')
+    if result['meta'].get('symbol') != task['symbol'].replace('.', '-'):
         raise SourceError('SYMBOL_MISMATCH')
-    quote = result['indicators']['quote'][0]
-    stamps = result.get('timestamp') or []
-    if any(len(quote.get(k, [])) != len(stamps) for k in ('open','high','low','close','volume')):
-        raise SourceError('ARRAY_LENGTH')
-    expected = set(task['grid']); saved, rejected, seen = [], [], set()
+    indicators=result.get('indicators')
+    if not isinstance(indicators,dict):raise SourceError('STOCK_SCHEMA')
+    quotes=indicators.get('quote')
+    if not isinstance(quotes,list) or len(quotes)!=1 or not isinstance(quotes[0],dict):raise SourceError('STOCK_SCHEMA')
+    quote=quotes[0];stamps=result.get('timestamp')
+    if not isinstance(stamps,list):raise SourceError('TIMESTAMP_SCHEMA')
+    if any(not isinstance(ts,int) or isinstance(ts,bool) or ts<0 for ts in stamps):
+        raise SourceError('TIMESTAMP_SCHEMA')
+    for key in ('open','high','low','close','volume'):
+        if not isinstance(quote.get(key),list):raise SourceError('OHLCV_SCHEMA')
+        if len(quote[key])!=len(stamps):raise SourceError('ARRAY_LENGTH')
+        if any(value is not None and (isinstance(value,bool) or not isinstance(value,(int,float))) for value in quote[key]):
+            raise SourceError('OHLCV_TYPE')
+    expected = set(task['grid']); saved, rejected, seen, encountered = [], [], set(), set()
+    window_start,window_end=min(expected),max(expected)+STEP
     for i, ts in enumerate(stamps):
-        if ts not in expected: continue  # Ignore unfinished sessions/close-auction-only/non-RTH labels.
+        if ts not in expected and (ts%STEP==0 or ts<window_start or ts>=window_end):continue
         try:
-            if ts in seen: raise ValueError('duplicate')
-            item = bar(ts, [quote[k][i] for k in ('open','high','low','close','volume')], task, observed)
+            if ts in encountered:raise ValueError('DUPLICATE_TIMESTAMP')
+            encountered.add(ts)
+            values=[quote[k][i] for k in ('open','high','low','close','volume')]
+            # Null or irregular timestamp labels never excuse present corrupt OHLCV.
+            known=[None if value is None else float(value) for value in values]
+            if any(value is not None and not math.isfinite(value) for value in known):raise ValueError('nonfinite')
+            o,h,l,close,volume=known
+            if (any(value is not None and value<=0 for value in known[:4]) or
+                (volume is not None and volume<0) or
+                (h is not None and any(value is not None and h<value for value in (o,l,close))) or
+                (l is not None and any(value is not None and l>value for value in (o,h,close)))):
+                raise ValueError('invalid_market')
+            if ts%STEP:raise ValueError('UNALIGNED_SOURCE_TIMESTAMP_EXCLUDED')
+            if any(v is None for v in values):raise ValueError('NULL_OHLCV')
+            item=bar(ts,values,task,observed)
             seen.add(ts); saved.append(item)
-        except (ValueError, TypeError, OverflowError): rejected.append({'row': i, 'reason': 'INVALID_OR_DUPLICATE_BAR'})
+        except (ValueError,TypeError,OverflowError) as exc:
+            reason={'nonfinite':'NONFINITE_OHLCV','invalid_market':'INVALID_MARKET','unfinished':'UNFINISHED_BAR',
+                    'DUPLICATE_TIMESTAMP':'DUPLICATE_TIMESTAMP','NULL_OHLCV':'NULL_OHLCV',
+                    'UNALIGNED_SOURCE_TIMESTAMP_EXCLUDED':'UNALIGNED_SOURCE_TIMESTAMP_EXCLUDED'}.get(str(exc),'INVALID_OHLCV')
+            rejected.append({'row':i,'reason':reason,**({'original_timestamp':ts} if ts%STEP else {})})
+    counts={reason:sum(r['reason']==reason for r in rejected) for reason in sorted({r['reason'] for r in rejected})}
+    availability=('NO_HISTORY_IN_WINDOW' if not encountered else 'NO_VALID_BARS' if not saved else
+                  'PARTIAL_BARS' if expected-seen or rejected else 'BARS_OBSERVED')
     return saved, {'expected': len(expected), 'saved': len(saved), 'missing': sorted(expected - seen),
                    'rejected': rejected, 'corporate_actions': result.get('events', {}),
+                   'source_observation':'OBSERVED','data_availability':availability,'rejection_counts':counts,
                    'identity': 'CURRENT_TICKER_NOT_PIT; no successor-price splice'}
 
 
@@ -276,9 +336,13 @@ def fetch_task(task, dest, http):
 
 
 def seal(dest):
+    dependency=Path(__file__).with_name('crypto_lifecycle.py')
+    target=dest/dependency.name
+    if target.exists() and target.read_bytes()!=dependency.read_bytes():raise ValueError('lifecycle_source_conflict')
+    if not target.exists():target.write_bytes(dependency.read_bytes())
     payload = {str(p.relative_to(dest)): sha(p.read_bytes()) for p in sorted(dest.rglob('*')) if p.is_file()}
     save(dest/'manifest.json', {'schema_version':1, 'run_id':dest.name, 'code_version':VERSION,
-         'code_sha256':sha(Path(__file__).read_bytes()), 'files':payload})
+         'code_sha256':sha(Path(__file__).read_bytes()),'code_dependencies':{'crypto_lifecycle.py':payload['crypto_lifecycle.py']}, 'files':payload})
     save(dest/'COMMITTED.json', {'manifest_sha256':sha((dest/'manifest.json').read_bytes())})
 
 
