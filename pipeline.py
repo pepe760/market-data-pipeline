@@ -74,9 +74,13 @@ def yahoo_symbol(ticker, session=None):
     return {'BF.B': 'BF-B', 'BRK.B': 'BRK-B'}.get(ticker, ticker)
 
 
-# Verified issuer/SEC completion dates. Never splice successor prices into the
+# Verified final trading sessions. Never splice successor prices into the
 # old security. Prior-window history remains in existing immutable batches.
-RETIRED_AFTER = {'AVB': '2026-08-17', 'EQR': '2026-08-17', 'EA': '2026-08-04', 'WBD': '2026-10-05'}
+RETIRED_AFTER = {
+    'AVB': '2026-08-17', 'EQR': '2026-08-17', 'EA': '2026-08-04', 'WBD': '2026-10-05',
+    # Kimberly-Clark confirmed KVUE ceased trading at the Nov 2, 2026 open.
+    'KVUE': '2026-10-30',
+}
 # A bar that is non-finite on both Yahoo reads is a vendor defect, not a dropped
 # download. Isolate a few such tickers so one bad print does not fail the daily
 # run; a broader NaN outage still leaves the batch PARTIAL.
@@ -531,7 +535,12 @@ def archived_price_rows(target, base):
     if result.returncode: raise RuntimeError('transfer')
     names=sorted(n.rstrip('/') for n in result.stdout.decode().splitlines() if RUN.fullmatch(n.rstrip('/')))
     sessions=closed_sessions(now())
-    required={('WBD',s) for s in sessions if s <= '2026-10-05'} | {('PSKY',s) for s in sessions if s < '2026-10-06'}
+    required = {
+        (ticker, session)
+        for ticker in ('WBD', 'KVUE')
+        for session in sessions
+        if session <= RETIRED_AFTER[ticker]
+    } | {('PSKY', session) for session in sessions if session < '2026-10-06'}
     rows={}
     if not required: return rows
     for name in reversed(names):
@@ -545,8 +554,7 @@ def archived_price_rows(target, base):
         verify(folder)
         for line in (folder/'prices.jsonl').read_text().splitlines():
             saved=json.loads(line); ticker=saved['ticker']; day=saved['session']
-            if ticker not in ('WBD','PSKY'): continue
-            if day > RETIRED_AFTER.get(ticker,'9999-12-31'): continue
+            if (ticker, day) not in required: continue
             try:
                 price_row(ticker,day,{**saved['values'],**saved.get('actions',{})},saved['available_at'])
             except (ValueError,KeyError): continue
