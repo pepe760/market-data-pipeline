@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="zh-HK">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="市場資料收集、覆蓋率同研究工作台">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src https://api.github.com; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>Market Data Lab · 收集終端</title>
+  <link rel="stylesheet" href="./style.css">
+  <script src="./app.js" defer></script>
+</head>
+<body>
+  <aside class="sidebar">
+    <a class="brand" href="#overview"><span aria-hidden="true">↗</span><div>Market Data Lab<small>收集終端</small></div></a>
+    <p class="label">WORKSPACE</p>
+    <nav aria-label="工作台"><a data-view="overview" href="#overview">◈ &nbsp; 收集總覽</a><a data-view="inventory" href="#inventory">▤ &nbsp; 資料庫存</a><a data-view="trends" href="#trends">↗ &nbsp; 走勢比較</a><a data-view="reports" href="#reports">▧ &nbsp; 回測報告</a></nav>
+    <a class="repo" href="https://github.com/pepe760/market-data-pipeline" target="_blank" rel="noopener">收集 repo ↗</a>
+  </aside>
+  <main>
+    <header class="top">
+      <div><p class="label">RESEARCH TERMINAL / MARKET DATA</p><h1 id="view-title">收集總覽</h1></div>
+      <div class="top-actions"><span id="snapshot-badge" class="tag warn">未載入私人快照</span><label class="button primary">載入私人快照<input id="snapshot" type="file" accept=".json,application/json"></label><button class="button subtle" id="clear-snapshot" type="button" hidden>清除</button></div>
+    </header>
+    <p id="notice" role="status" class="notice" hidden></p>
+    <section id="overview" class="view">
+      <div class="intro">
+        <div><p class="label">PIPELINE / CONTROL ROOM</p><h2>由收集到研究，<br>每個缺口都睇得到。</h2><p>一頁核對 GitHub Actions，再打開你嘅私人庫存、走勢同回測索引。</p></div>
+        <div class="focus"><p class="label">FOCUS / XSP</p><strong>15 分鐘快掃</strong><p id="focus-note">等待已核對嘅私人快掃批次。</p></div>
+      </div>
+      <div id="overview-stats" class="stats"></div>
+      <article class="panel">
+        <div class="section-head"><div><p class="label">PUBLIC / GITHUB ACTIONS</p><h2>最近工作流程</h2></div><button id="refresh-actions" class="button subtle" type="button">⟳ 刷新</button></div>
+        <p class="hint">顯示各流程最近一次正式執行。GitHub 成功狀態同資料覆蓋分開核對。</p>
+        <div class="scroller"><table><thead><tr><th>工作流程</th><th>狀態</th><th>香港時間</th><th>來源</th></tr></thead><tbody id="actions"></tbody></table></div>
+        <p id="actions-state" class="hint" role="status">讀取公開 Actions…</p>
+      </article>
+    </section>
+    <section id="inventory" class="view" hidden>
+      <article class="panel">
+        <div class="section-head"><div><p class="label">PRIVATE / INVENTORY</p><h2>資料覆蓋</h2></div><span id="inventory-clock" class="hint"></span></div>
+        <div class="filters" id="inventory-filters">
+          <div role="group" aria-label="庫存分類"><button type="button" class="pill selected" data-kind="all">全部</button><button type="button" class="pill" data-kind="collection">自動收集</button><button type="button" class="pill" data-kind="historical">歷史庫</button><button type="button" class="pill" data-kind="pinned">已標星</button></div>
+          <label><span class="sr-only">搜尋資料系列</span><input id="filter" type="search" placeholder="搜尋 XSP、PIT、crypto…"></label>
+        </div>
+        <div class="scroller"><table><thead><tr><th>系列</th><th>頻率</th><th>存檔範圍</th><th><button type="button" class="sort" id="sort-batches">批次 ↕</button></th><th>品質</th></tr></thead><tbody id="inventory-rows"></tbody></table></div>
+        <p id="inventory-state" class="hint"></p>
+      </article>
+    </section>
+    <section id="trends" class="view" hidden>
+      <article class="panel">
+        <div class="section-head"><div><p class="label">PRIVATE / TREND EXPLORER</p><h2>價格走勢比較</h2></div></div>
+        <div class="filters"><label>主系列 <select id="trend-main"></select></label><label>比較系列 <select id="trend-compare"></select></label><label>最近 <select id="range"><option value="30">30 點</option><option value="90">90 點</option><option value="180" selected>180 點</option></select></label></div>
+        <div id="trend-summary" class="stats"></div>
+        <div id="trend-chart" class="chart"></div><p id="trend-cursor" class="hint"></p><p id="trend-state" class="hint"></p>
+      </article>
+    </section>
+    <section id="reports" class="view" hidden>
+      <article class="panel">
+        <div class="section-head"><div><p class="label">PRIVATE / RESEARCH ARCHIVE</p><h2>已核對報告</h2></div></div>
+        <div class="filters"><label><span class="sr-only">搜尋回測</span><input id="report-search" type="search" placeholder="搜尋 NQ、XSP、RSR…"></label><label>專案 <select id="report-group"><option value="">全部</option></select></label></div>
+        <div class="scroller"><table><thead><tr><th>報告</th><th>研究專案</th><th>原文</th></tr></thead><tbody id="reports-rows"></tbody></table></div>
+        <div class="pager"><span id="reports-state" class="hint"></span><button class="button subtle" type="button" id="prev">上一頁</button><button class="button subtle" type="button" id="next">下一頁</button></div>
+      </article>
+    </section>
+    <footer><span>MARKET DATA LAB</span><span>GitHub 公開狀態 · 私人快照只喺目前分頁讀取</span></footer>
+  </main>
+</body>
+</html>
