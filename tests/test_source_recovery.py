@@ -1,6 +1,8 @@
 import datetime as dt
 import json
 import math
+import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -30,6 +32,48 @@ def collect_history(frames, tickers, sessions, archived=None):
     return status, quality, rows, yf
 
 class RecoveryTests(unittest.TestCase):
+    def test_kvue_recovers_verified_trading_history_only(self):
+        sessions = ['2026-10-29', '2026-10-30', '2026-11-02']
+        batch_id = '20261103T034441Z-0123456789ab'
+        observed = '2026-10-31T02:00:00Z'
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            archive = root / batch_id
+            archive.mkdir()
+            rows = [p.price_row('KVUE', day, GOOD, observed) for day in sessions]
+            for name in p.FILES:
+                (archive / name).write_text('')
+            (archive / 'prices.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in rows))
+            p.seal(archive)
+
+            def copy_archive(command, source, dest):
+                if command == 'copyto':
+                    shutil.copyfile(archive / Path(source).name, dest)
+                else:
+                    shutil.copytree(archive, dest, dirs_exist_ok=True)
+
+            listing = subprocess.CompletedProcess([], 0, stdout=(batch_id + '/\n').encode())
+            with patch.object(p, 'closed_sessions', return_value=sessions), \
+                 patch.object(p.subprocess, 'run', return_value=listing), \
+                 patch.object(p, 'rclone', side_effect=copy_archive):
+                recovered = p.archived_price_rows('test:', root / 'download')
+
+            self.assertEqual(set(recovered), {('KVUE', day) for day in sessions[:2]})
+            status, quality, output, _ = collect_history([Frame([]), Frame([])], ['KVUE'], sessions, recovered)
+            self.assertEqual(status, 'COMPLETE')
+            self.assertEqual(quality['checks'][0]['recovered_sessions'], sessions[:2])
+            self.assertEqual([row['session'] for row in output], sessions[:2])
+            self.assertTrue(all(row['available_at'] == observed and row['recovery_batch'] == batch_id
+                                for row in output))
+            recovered.pop(('KVUE', sessions[0]))
+            status, quality, _, _ = collect_history([Frame([]), Frame([])], ['KVUE'], sessions, recovered)
+            self.assertEqual(status, 'PARTIAL')
+            self.assertEqual(quality['checks'][0]['missing_sessions'], sessions[:1])
+            status, quality, _, vendor = collect_history([], ['KVUE'], sessions[-1:])
+            self.assertEqual(status, 'COMPLETE')
+            self.assertEqual(quality['checks'][0]['status'], 'NOT_EXPECTED_RETIRED')
+            vendor.Ticker.assert_not_called()
+
     def test_news_search_fallback_keeps_only_metadata(self):
         yf=Mock(); yf.Ticker.return_value.get_news.return_value=[]
         yf.Search.return_value.news=[{'title':'Headline','link':'https://example.org/story',
