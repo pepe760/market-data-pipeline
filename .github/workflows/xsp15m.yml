@@ -1,0 +1,48 @@
+name: XSP 15-minute delayed quick scan
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '47 9 * * 1-5'
+      timezone: America/New_York
+    - cron: '2,17,32,47 10-15 * * 1-5'
+      timezone: America/New_York
+    - cron: '2 16 * * 1-5'
+      timezone: America/New_York
+permissions:
+  contents: read
+concurrency:
+  group: private-xsp15m-writer
+  cancel-in-progress: false
+jobs:
+  scan:
+    if: >-
+      github.repository == 'pepe760/market-data-pipeline' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+      (vars.XSP15M_ENABLED == 'true' && vars.XSP15M_STORAGE_AUTHORIZED == 'true'))
+    runs-on: ubuntu-latest
+    environment: xsp-sandbox
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install 'exchange-calendars>=4.2,<5'
+      - if: github.event_name == 'schedule'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq rclone
+      - if: github.event_name == 'workflow_dispatch'
+        run: python xsp15m.py probe
+        env:
+          XSP15M_TRADIER_SANDBOX_TOKEN: ${{ secrets.XSP15M_TRADIER_SANDBOX_TOKEN }}
+      - if: github.event_name == 'schedule'
+        run: python xsp15m.py cloud
+        env:
+          XSP15M_TRADIER_SANDBOX_TOKEN: ${{ secrets.XSP15M_TRADIER_SANDBOX_TOKEN }}
+          XSP15M_STORAGE_AUTHORIZED: ${{ vars.XSP15M_STORAGE_AUTHORIZED }}
+          DRIVE_TOKEN: ${{ secrets.DRIVE_TOKEN }}
+          DRIVE_FOLDER_ID: ${{ secrets.DRIVE_FOLDER_ID }}
+          DRIVE_CLIENT_ID: ${{ secrets.DRIVE_CLIENT_ID }}
+          DRIVE_CLIENT_SECRET: ${{ secrets.DRIVE_CLIENT_SECRET }}
