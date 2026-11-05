@@ -1,69 +1,287 @@
 <!doctype html>
 <html lang="zh-HK">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="市場資料收集、覆蓋率同研究工作台">
-  <meta name="referrer" content="no-referrer">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src https://api.github.com; object-src 'none'; base-uri 'none'; form-action 'none'">
-  <title>Market Data Lab · 收集終端</title>
-  <link rel="stylesheet" href="./style.css">
-  <script src="./app.js" defer></script>
-</head>
-<body>
-  <aside class="sidebar">
-    <a class="brand" href="#overview"><span aria-hidden="true">↗</span><div>Market Data Lab<small>收集終端</small></div></a>
-    <p class="label">WORKSPACE</p>
-    <nav aria-label="工作台"><a data-view="overview" href="#overview">◈ &nbsp; 收集總覽</a><a data-view="inventory" href="#inventory">▤ &nbsp; 資料庫存</a><a data-view="trends" href="#trends">↗ &nbsp; 走勢比較</a><a data-view="reports" href="#reports">▧ &nbsp; 回測報告</a></nav>
-    <a class="repo" href="https://github.com/pepe760/market-data-pipeline" target="_blank" rel="noopener">收集 repo ↗</a>
-  </aside>
-  <main>
-    <header class="top">
-      <div><p class="label">RESEARCH TERMINAL / MARKET DATA</p><h1 id="view-title">收集總覽</h1></div>
-      <div class="top-actions"><span id="snapshot-badge" class="tag warn">未載入私人快照</span><label class="button primary">載入私人快照<input id="snapshot" type="file" accept=".json,application/json"></label><button class="button subtle" id="clear-snapshot" type="button" hidden>清除</button></div>
-    </header>
-    <p id="notice" role="status" class="notice" hidden></p>
-    <section id="overview" class="view">
-      <div class="intro">
-        <div><p class="label">PIPELINE / CONTROL ROOM</p><h2>由收集到研究，<br>每個缺口都睇得到。</h2><p>一頁核對 GitHub Actions，再打開你嘅私人庫存、走勢同回測索引。</p></div>
-        <div class="focus"><p class="label">FOCUS / XSP</p><strong>15 分鐘快掃</strong><p id="focus-note">等待已核對嘅私人快掃批次。</p></div>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta
+      name="description"
+      content="William 市場研究台，自動更新多市場相對強弱、走勢及資料覆蓋"
+    />
+    <meta name="referrer" content="no-referrer" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; connect-src 'self' https://api.github.com; img-src 'self' data: blob:; object-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <title>市場研究台 · William's Market Lab</title>
+    <link rel="stylesheet" href="./style.css" />
+    <script src="./app.js" defer></script>
+  </head>
+  <body>
+    <header class="header">
+      <a class="brand" href="#overview"
+        ><span class="brand-icon" aria-hidden="true">↗</span>
+        <div>市場研究台<small>WILLIAM'S MARKET LAB</small></div></a
+      >
+      <div class="header-right">
+        <span id="connection" class="status">讀取數據</span
+        ><button
+          class="icon-button"
+          id="theme"
+          type="button"
+          aria-label="切換明暗外觀"
+        >
+          ◐</button
+        ><button class="button" id="refresh" type="button">⟳ 刷新</button>
       </div>
-      <div id="overview-stats" class="stats"></div>
-      <article class="panel">
-        <div class="section-head"><div><p class="label">PUBLIC / GITHUB ACTIONS</p><h2>最近工作流程</h2></div><button id="refresh-actions" class="button subtle" type="button">⟳ 刷新</button></div>
-        <p class="hint">顯示各流程最近一次正式執行。GitHub 成功狀態同資料覆蓋分開核對。</p>
-        <div class="scroller"><table><thead><tr><th>工作流程</th><th>狀態</th><th>香港時間</th><th>來源</th></tr></thead><tbody id="actions"></tbody></table></div>
-        <p id="actions-state" class="hint" role="status">讀取公開 Actions…</p>
-      </article>
-    </section>
-    <section id="inventory" class="view" hidden>
-      <article class="panel">
-        <div class="section-head"><div><p class="label">PRIVATE / INVENTORY</p><h2>資料覆蓋</h2></div><span id="inventory-clock" class="hint"></span></div>
-        <div class="filters" id="inventory-filters">
-          <div role="group" aria-label="庫存分類"><button type="button" class="pill selected" data-kind="all">全部</button><button type="button" class="pill" data-kind="collection">自動收集</button><button type="button" class="pill" data-kind="historical">歷史庫</button><button type="button" class="pill" data-kind="pinned">已標星</button></div>
-          <label><span class="sr-only">搜尋資料系列</span><input id="filter" type="search" placeholder="搜尋 XSP、PIT、crypto…"></label>
+    </header>
+    <div class="shell">
+      <aside class="sidebar">
+        <p class="nav-label">市場</p>
+        <nav aria-label="市場及工具">
+          <a data-tab="overview" href="#overview">◈ <span>市場總覽</span></a>
+          <a data-tab="us" href="#us">US <span>美股</span></a>
+          <a data-tab="hk" href="#hk">HK <span>港股</span></a>
+          <a data-tab="crypto" href="#crypto">₿ <span>加密貨幣</span></a>
+          <a data-tab="fx" href="#fx">⇄ <span>外匯</span></a>
+          <a data-tab="commodities" href="#commodities"
+            >◇ <span>大宗商品</span></a
+          >
+          <a data-tab="etf" href="#etf">▥ <span>全球／板塊 ETF</span></a>
+          <a data-tab="macro" href="#macro">◎ <span>宏觀與流動性</span></a>
+          <a data-tab="compare" href="#compare">⌁ <span>走勢比較</span></a>
+          <a data-tab="watchlist" href="#watchlist"
+            >☆ <span>我的觀察</span><b id="watch-count"></b
+          ></a>
+          <a data-tab="coverage" href="#coverage">▤ <span>收集與方法</span></a>
+        </nav>
+        <div class="sidebar-foot">
+          <a
+            href="https://github.com/pepe760/market-data-pipeline/actions"
+            target="_blank"
+            rel="noopener"
+            >GitHub 收集記錄 ↗</a
+          >
+          <p>Actions 收集 → GitHub 存檔<br />網站自動讀取</p>
         </div>
-        <div class="scroller"><table><thead><tr><th>系列</th><th>頻率</th><th>存檔範圍</th><th><button type="button" class="sort" id="sort-batches">批次 ↕</button></th><th>品質</th></tr></thead><tbody id="inventory-rows"></tbody></table></div>
-        <p id="inventory-state" class="hint"></p>
-      </article>
-    </section>
-    <section id="trends" class="view" hidden>
-      <article class="panel">
-        <div class="section-head"><div><p class="label">PRIVATE / TREND EXPLORER</p><h2>價格走勢比較</h2></div></div>
-        <div class="filters"><label>主系列 <select id="trend-main"></select></label><label>比較系列 <select id="trend-compare"></select></label><label>最近 <select id="range"><option value="30">30 點</option><option value="90">90 點</option><option value="180" selected>180 點</option></select></label></div>
-        <div id="trend-summary" class="stats"></div>
-        <div id="trend-chart" class="chart"></div><p id="trend-cursor" class="hint"></p><p id="trend-state" class="hint"></p>
-      </article>
-    </section>
-    <section id="reports" class="view" hidden>
-      <article class="panel">
-        <div class="section-head"><div><p class="label">PRIVATE / RESEARCH ARCHIVE</p><h2>已核對報告</h2></div></div>
-        <div class="filters"><label><span class="sr-only">搜尋回測</span><input id="report-search" type="search" placeholder="搜尋 NQ、XSP、RSR…"></label><label>專案 <select id="report-group"><option value="">全部</option></select></label></div>
-        <div class="scroller"><table><thead><tr><th>報告</th><th>研究專案</th><th>原文</th></tr></thead><tbody id="reports-rows"></tbody></table></div>
-        <div class="pager"><span id="reports-state" class="hint"></span><button class="button subtle" type="button" id="prev">上一頁</button><button class="button subtle" type="button" id="next">下一頁</button></div>
-      </article>
-    </section>
-    <footer><span>MARKET DATA LAB</span><span>GitHub 公開狀態 · 私人快照只喺目前分頁讀取</span></footer>
-  </main>
-</body>
+      </aside>
+      <main>
+        <div class="page-heading">
+          <div>
+            <p class="eyebrow" id="eyebrow">MARKET OVERVIEW</p>
+            <h1 id="page-title">市場總覽</h1>
+            <p class="subtitle" id="subtitle">跨市場一齊睇，先知強弱喺邊。</p>
+          </div>
+          <div class="data-clock">
+            <span>最近收集</span><strong id="collected-at">—</strong
+            ><small id="update-note">GitHub 自動更新</small>
+          </div>
+        </div>
+        <div id="notice" class="notice" role="status" hidden></div>
+        <section
+          class="quote-strip"
+          id="quote-strip"
+          aria-label="核心市場概況"
+        ></section>
+        <section class="view" id="overview">
+          <div class="overview-grid">
+            <article class="panel summary-panel">
+              <div class="section-title">
+                <div>
+                  <p class="eyebrow">MARKET PULSE</p>
+                  <h2>今日觀察</h2>
+                </div>
+                <span class="badge">規則計算</span>
+              </div>
+              <div id="market-summary"></div>
+            </article>
+            <article class="panel">
+              <div class="section-title">
+                <div>
+                  <p class="eyebrow">PARTICIPATION</p>
+                  <h2>市場寬度</h2>
+                </div>
+              </div>
+              <div id="breadth"></div>
+            </article>
+          </div>
+          <article class="panel">
+            <div class="section-title">
+              <div>
+                <p class="eyebrow">CROSS-ASSET ROTATION</p>
+                <h2>跨市場強弱</h2>
+              </div>
+              <a href="#etf" class="text-link">板塊熱力圖 →</a>
+            </div>
+            <p class="caption">
+              日線回報及對各市場預設基準嘅同窗超額。收市時間各有不同，逐行保留時間。
+            </p>
+            <div id="cross-table"></div>
+          </article>
+          <div class="overview-grid">
+            <article class="panel">
+              <div class="section-title">
+                <h2>短線轉強</h2>
+                <span class="caption">5 日相對表現</span>
+              </div>
+              <div id="leaders"></div>
+            </article>
+            <article class="panel">
+              <div class="section-title">
+                <h2>短線轉弱</h2>
+                <span class="caption">5 日相對表現</span>
+              </div>
+              <div id="laggards"></div>
+            </article>
+          </div>
+        </section>
+        <section class="view" id="market-view" hidden>
+          <article class="panel">
+            <div class="filters">
+              <label class="search"
+                ><span aria-hidden="true">⌕</span
+                ><input
+                  id="market-search"
+                  type="search"
+                  placeholder="搜尋代號、名稱或板塊"
+                  aria-label="搜尋市場標的"
+              /></label>
+              <label
+                >排序<select id="sort">
+                  <option value="rs">相對強弱</option>
+                  <option value="d1">1 日升跌</option>
+                  <option value="d5">5 日升跌</option>
+                  <option value="d20">20 日升跌</option>
+                  <option value="d60">60 日升跌</option>
+                  <option value="symbol">代號</option>
+                </select></label
+              >
+              <label
+                >基準<select id="benchmark">
+                  <option value="auto">市場預設</option>
+                  <option value="spy">SPY</option>
+                  <option value="btc">BTC</option>
+                  <option value="absolute">絕對升跌</option>
+                </select></label
+              >
+              <label
+                >趨勢<select id="trend-filter">
+                  <option value="all">全部</option>
+                  <option value="above20">高於 20 日線</option>
+                  <option value="green">20／50／200 日全綠</option>
+                  <option value="red">20／50／200 日全紅</option>
+                </select></label
+              >
+              <label
+                >板塊<select id="sector-filter">
+                  <option value="">全部</option>
+                </select></label
+              >
+            </div>
+            <div id="heatmap" class="heatmap" hidden></div>
+            <p id="market-coverage" class="caption"></p>
+            <div id="market-table"></div>
+            <div class="pager">
+              <span id="market-page" class="caption"></span
+              ><button class="button" id="prev-page" type="button">
+                ← 上頁</button
+              ><button class="button" id="next-page" type="button">
+                下頁 →
+              </button>
+            </div>
+          </article>
+        </section>
+        <section class="view" id="macro-view" hidden>
+          <article class="panel">
+            <div class="section-title">
+              <div>
+                <p class="eyebrow">LIQUIDITY / ECONOMY</p>
+                <h2>資金同經濟溫度</h2>
+              </div>
+              <span class="badge">官方來源</span>
+            </div>
+            <p class="caption">
+              宏觀數據按公佈頻率更新，請睇每項觀測日期同單位。
+            </p>
+            <div id="macro-cards" class="context-grid"></div>
+          </article>
+          <article class="panel">
+            <div class="section-title"><h2>其他資料接駁</h2></div>
+            <div id="context-sources"></div>
+          </article>
+        </section>
+        <section class="view" id="compare-view" hidden>
+          <article class="panel">
+            <div class="section-title">
+              <div>
+                <p class="eyebrow">COMPARE / PRICE PATH</p>
+                <h2>同一起點，睇清差距</h2>
+              </div>
+              <button type="button" class="button" id="export-chart">
+                下載圖表
+              </button>
+            </div>
+            <div class="filters">
+              <label
+                >加入標的<input
+                  list="asset-options"
+                  id="compare-input"
+                  maxlength="24"
+                  placeholder="SPY、QQQ、BTC-USD" /><datalist
+                  id="asset-options"
+                ></datalist></label
+              ><button type="button" class="button primary" id="add-compare">
+                加入</button
+              ><label
+                >區間<select id="compare-range">
+                  <option value="30">最近 30 個共同觀測日</option>
+                  <option value="90" selected>最近 90 個共同觀測日</option>
+                  <option value="180">最近 180 個共同觀測日</option>
+                </select></label
+              >
+            </div>
+            <div id="compare-tags" class="compare-tags"></div>
+            <div id="compare-chart" class="chart"></div>
+            <p id="chart-cursor" class="caption"></p>
+            <p id="compare-note" class="caption"></p>
+          </article>
+        </section>
+        <section class="view" id="coverage-view" hidden>
+          <article class="panel">
+            <div class="section-title">
+              <div>
+                <p class="eyebrow">DATA OPERATIONS</p>
+                <h2>收集覆蓋</h2>
+              </div>
+            </div>
+            <div id="coverage-stats" class="stats"></div>
+            <div id="coverage-table"></div>
+          </article>
+          <article class="panel">
+            <div class="section-title"><h2>點樣計，同點樣用</h2></div>
+            <div id="method" class="prose"></div>
+          </article>
+          <article class="panel">
+            <div class="section-title"><h2>參考功能接駁表</h2></div>
+            <div id="scope-table"></div>
+          </article>
+        </section>
+        <footer>
+          <span>William's Market Lab</span
+          ><span id="footer-time">資料來源逐項標示</span>
+        </footer>
+      </main>
+    </div>
+    <dialog id="asset-detail" aria-labelledby="asset-title">
+      <div class="section-title">
+        <div>
+          <p class="eyebrow">ASSET DETAIL</p>
+          <h2 id="asset-title"></h2>
+        </div>
+        <form method="dialog">
+          <button class="button" aria-label="關閉標的詳情">關閉 ✕</button>
+        </form>
+      </div>
+      <div id="asset-body"></div>
+    </dialog>
+  </body>
 </html>
