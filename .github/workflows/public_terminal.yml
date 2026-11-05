@@ -33,14 +33,15 @@ jobs:
       - name: Verify terminal calculation contracts
         run: |
           python -m unittest discover -s tests -p 'test_public_terminal.py' -v
+          python -m unittest discover -s tests -p 'test_terminal_intraday.py' -v
           python -m unittest discover -s tests -p 'test_terminal_context.py' -v
           node --test tests/test_terminal_frontend.cjs
       - name: Collect bounded public market facts
         run: |
           if [ "$FULL_REFRESH" = "true" ]; then
-            python public_terminal.py --output-dir _site/data --max-requests 1800 --workers 6 --force --refresh-universe
+            python public_terminal.py --output-dir _site/data --max-requests 1860 --intraday-budget 60 --workers 6 --force --refresh-universe
           else
-            python public_terminal.py --output-dir _site/data --max-requests 180 --workers 6
+            python public_terminal.py --output-dir _site/data --max-requests 180 --intraday-budget 24 --workers 6
           fi
         env:
           FULL_REFRESH: ${{ inputs.full_refresh }}

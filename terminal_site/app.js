@@ -125,6 +125,7 @@
     .slice(0, 10);
   const priceCache = new Map(),
     relativeCache = new Map();
+  const intradayCache = new Map();
   function market(a) {
     if (a.sector === "商品") return "commodities";
     const key = String(a.market || "").toLowerCase();
@@ -165,6 +166,20 @@
       );
     }
     return priceCache.get(a.symbol);
+  }
+  function intradaySeries(a) {
+    if (!a) return [];
+    if (intradayCache.has(a.symbol)) return intradayCache.get(a.symbol);
+    const points = new Map();
+    for (const p of a.intraday?.bars || []) {
+      const stamp = Date.parse(p.end);
+      if (Number.isFinite(stamp) && finite(p.close) && p.close > 0)
+        points.set(new Date(stamp).toISOString(), {
+          date: new Date(stamp).toISOString(),
+          close: p.close,
+        });
+    }
+    return [...points.values()].sort((x, y) => x.date.localeCompare(y.date));
   }
   function benchmark(a, mode = "auto") {
     if (mode === "absolute") return null;
@@ -256,18 +271,23 @@
     );
     return svg;
   }
-  const trendPrice = a => finite(a.analysis_price) ? a.analysis_price : a.price;
+  const trendPrice = (a) =>
+    finite(a.analysis_price) ? a.analysis_price : a.price;
   function ageText(a) {
     return a.price_asof?.slice(0, 10) || series(a).at(-1)?.date || "無報價";
   }
   function stateText(a) {
     const q = typeof a.quality === "object" ? a.quality.status : a.quality;
     const labels = {
-      OBSERVED: "已觀測", SOURCE_ERROR_PREVIOUS_RETAINED: "來源失敗，保留原值",
-      SOURCE_ERROR: "來源失敗", AWAITING_FIRST_OBSERVATION: "待首次收集"
+      OBSERVED: "已觀測",
+      SOURCE_ERROR_PREVIOUS_RETAINED: "來源失敗，保留原值",
+      SOURCE_ERROR: "來源失敗",
+      AWAITING_FIRST_OBSERVATION: "待首次收集",
     };
-    return (labels[q] || (q && !["OK", "FRESH"].includes(q) ? q : "")) +
-      (a.fresh === false && a.price != null ? " · 較舊" : "");
+    return (
+      (labels[q] || (q && !["OK", "FRESH"].includes(q) ? q : "")) +
+      (a.fresh === false && a.price != null ? " · 較舊" : "")
+    );
   }
   function toggleWatch(a) {
     if (watches.has(a.symbol)) watches.delete(a.symbol);
@@ -289,7 +309,9 @@
       button(a.symbol, () => detail(a), "symbol"),
       el("small", a.name || a.symbol),
       el("small", a.sector || a.currency || ""),
-      ...(a.identity_status === "UNVERIFIED_SYMBOL_MATCH" ? [el("small", "名稱映射待核實")] : []),
+      ...(a.identity_status === "UNVERIFIED_SYMBOL_MATCH"
+        ? [el("small", "名稱映射待核實")]
+        : []),
     );
     return td;
   }
@@ -326,8 +348,27 @@
       el("small", value.base + (value.dates ? " · " + value.dates[1] : "")),
     );
     tr.append(rs);
+    if (full)
+      for (const period of ["h1", "h4"]) {
+        const value = a.intraday?.returns?.[period];
+        const td = cell(pct(value), tone(value));
+        td.title =
+          (a.intraday?.windows?.[period]?.join(" → ") ||
+            "未納入／完整15分鐘bars不足") +
+          " · " +
+          (a.intraday?.quality || "未納入核心名單");
+        if (a.intraday?.asof)
+          td.append(
+            el(
+              "small",
+              hkTime(a.intraday.asof) +
+                (a.intraday.fresh === false ? " · 較舊" : ""),
+            ),
+          );
+        tr.append(td);
+      }
     for (const k of full
-      ? ["d1", "d5", "d20", "d60", "d120"]
+      ? ["d1", "d3", "d5", "d10", "d20", "d60", "d120"]
       : ["d1", "d5", "d20", "d60"])
       tr.append(cell(pct(a.returns?.[k]), tone(a.returns?.[k])));
     if (full) tr.append(trendCell(a));
@@ -341,7 +382,15 @@
     );
     tr.append(sp);
     const dt = cell(a.price_asof ? hkTime(a.price_asof) : "未取得");
-    dt.append(el("small", "分析 " + (a.analytics_asof || "未取得") + (a.analytics_partial ? " · 未收市" : "")), el("small", stateText(a)));
+    dt.append(
+      el(
+        "small",
+        "分析 " +
+          (a.analytics_asof || "未取得") +
+          (a.analytics_partial ? " · 未收市" : ""),
+      ),
+      el("small", stateText(a)),
+    );
     tr.append(dt);
     const cp = cell();
     cp.append(button("＋", () => addCompare(a.symbol), "pin"));
@@ -355,8 +404,12 @@
           "標的",
           "價格",
           "20 期超額¹",
+          "1 小時²",
+          "4 小時²",
           "1 日",
+          "3 日",
           "5 日",
+          "10 日",
           "20 日",
           "60 日",
           "120 日",
@@ -374,7 +427,7 @@
           "20 日",
           "60 日",
           "21 日走勢",
-          "報價日",
+          "報價時間／分析日",
           "比較",
         ];
   }
@@ -541,20 +594,33 @@
     filtered = filtered.filter(
       (a) =>
         trend === "all" ||
-        (trend === "above20" && finite(a.sma?.d20) && trendPrice(a) >= a.sma.d20) ||
+        (trend === "intraday" && !!a.intraday?.asof) ||
+        (trend === "above20" &&
+          finite(a.sma?.d20) &&
+          trendPrice(a) >= a.sma.d20) ||
         (["green", "red"].includes(trend) &&
           ["d20", "d50", "d200"].every(
             (k) =>
               finite(a.sma?.[k]) &&
-              (trend === "green" ? trendPrice(a) >= a.sma[k] : trendPrice(a) < a.sma[k]),
+              (trend === "green"
+                ? trendPrice(a) >= a.sma[k]
+                : trendPrice(a) < a.sma[k]),
           )),
     );
     const sort = $("sort").value;
     filtered.sort((a, b) =>
       sort === "symbol"
         ? a.symbol.localeCompare(b.symbol)
-        : ((sort === "rs" ? score(b) : b.returns?.[sort]) ?? -Infinity) -
-            ((sort === "rs" ? score(a) : a.returns?.[sort]) ?? -Infinity) ||
+        : ((sort === "rs"
+            ? score(b)
+            : sort.startsWith("h")
+              ? b.intraday?.returns?.[sort]
+              : b.returns?.[sort]) ?? -Infinity) -
+            ((sort === "rs"
+              ? score(a)
+              : sort.startsWith("h")
+                ? a.intraday?.returns?.[sort]
+                : a.returns?.[sort]) ?? -Infinity) ||
           a.symbol.localeCompare(b.symbol),
     );
     const max = Math.max(0, Math.ceil(filtered.length / 40) - 1);
@@ -571,7 +637,7 @@
     $("prev-page").disabled = page === 0;
     $("next-page").disabled = page === max;
     $("market-coverage").textContent =
-      `已存 ${group.filter(a => finite(a.price)).length}／${group.length} 個名單標的；篩選後 ${filtered.length} 個。¹ 超額＝同窗價格升幅減基準升幅，使用共同日期；FX／商品預設用絕對升幅。留意各行報價日，舊資料唔代表今日排名。`;
+      `已存 ${group.filter((a) => finite(a.price)).length}／${group.length} 個名單標的；篩選後 ${filtered.length} 個。¹ 超額＝同窗價格升幅減基準升幅，使用共同日期；FX／商品預設用絕對升幅。留意各行報價日，舊資料唔代表今日排名。² 分時欄只涵蓋核心名單，按完整15分鐘bars計，逐項顯示實際時點。`;
     $("heatmap").hidden = active !== "etf";
     if (active === "etf") {
       clear($("heatmap"));
@@ -746,13 +812,23 @@
       }),
       $("coverage-table"),
     );
+    const intraday = data?.coverage?.intraday;
+    if (intraday)
+      $("coverage-table").append(
+        el(
+          "p",
+          `15分鐘核心：目標 ${intraday.target ?? "—"}，已存 ${intraday.stored ?? "—"}，新鮮 ${intraday.fresh ?? "—"}，本輪更新 ${intraday.updated ?? "—"}，本輪失敗 ${intraday.failed ?? "—"}。日線及日內共用180請求上限；刷新並非所有標的同步。`,
+          "caption",
+        ),
+      );
     clear($("method"));
     for (const t of [
       "資料流程：GitHub Actions 直接取得公開行情 → 保存版本化公開快照及日線 → GitHub Pages 自動更新。開頁會自動讀取，毋須 Google Drive、Mac 或手動匯入。私人研究庫、授權原始數據及帳戶資料繼續獨立保存。",
       "相對強弱：20 個共同觀測期間嘅標的價格回報，減同日期基準價格回報。美股／ETF 預設 SPY，Crypto 用 BTC，港股用 2800.HK；FX／商品預設絕對升幅。更換基準可重新排序。呢個係自家公開公式，唔係 RSR／URSR／NRSR 或 LazyRS 嘅專有分數。",
-      "1／5／20／60／120 日指日線觀測間距；美股按交易日，Crypto 包含週末。MA 係可用日線收市價簡單均線。三燈使用同口徑分析價格（唔用未調整即時價混算），由左至右對應有冇高於 20／50／200 日線。缺歷史顯示空值。",
+      "1／3／5／10／20／60／120 日指日線觀測間距；美股按交易日，Crypto 包含週末。MA 係可用日線收市價簡單均線。三燈使用同口徑分析價格（唔用未調整即時價混算），由左至右對應有冇高於 20／50／200 日線。缺歷史顯示空值。",
       "比較圖只使用共同日期，每條線由共同起點重設 100。價格幣別按原資產；未做匯率對沖，未計稅或費用。Yahoo 供應商調整價可能包含拆股及股息再投資；Crypto 為現貨價，口徑各有不同。原始歷史亦可能修訂，並非嚴格 PIT 投資績效／回測。",
       "市場寬度同排名只基於已成功收集名單，名單可能有存活偏差。新鮮度按行情時鐘判斷，收集成功唔代表報價即時。來源失敗保留上次成功數據及原日期；各市場休市日不同，勿混作同步可成交價。",
+      "15分鐘線只涵蓋核心60個標的，獨立輪換；每輪最多156個日線＋24個日內請求。1／4小時採完整、連續4／16根15分鐘bars；缺bar或跨休市唔填補。港股午休會令連續4小時欄空白。日內比較用完全相同UTC結束時間，屬原始價格口徑。",
       "宏觀資料係現時可見嘅修訂版本，唔係歷史發布 vintage。利率用百分點、金額標明百萬／十億，流動性代理冇經交易效果驗證。",
     ])
       $("method").append(el("p", t));
@@ -788,10 +864,11 @@
       ],
       ["VIX／信用利差", "官方連結", "再發布資格未核實，唔公開其數值"],
       [
-        "小時級超額／歷史名次／反彈比",
-        "待擴充",
-        "現階段只提供日線比較及可追溯價格",
+        "15分鐘線／1h及4h回報",
+        "核心60部分啟用",
+        "完整bars、實際時點、精確UTC比較；唔保證60個同時刷新",
       ],
+      ["歷史名次／反彈比", "待擴充", "唔以事後現有成分倒填歷史排名"],
       ["策略回測／研究報告", "私人庫保留", "未獲公開授權嘅報告唔放公開 GitHub"],
     ];
     table(
@@ -822,7 +899,11 @@
       const r = await fetch("./" + a.series_path);
       if (!r.ok) throw Error("not found");
       const payload = await r.json();
-      if (payload.symbol !== a.symbol || payload.analytics_asof !== a.analytics_asof) return;
+      if (
+        payload.symbol !== a.symbol ||
+        payload.analytics_asof !== a.analytics_asof
+      )
+        return;
       const points = payload.series;
       if (Array.isArray(points)) {
         a.series = points;
@@ -830,6 +911,28 @@
         relativeCache.clear();
         a._seriesLoaded = true;
       }
+    } catch {}
+  }
+  async function ensureIntraday(a) {
+    const path = a?.intraday?.series_path;
+    if (
+      !path ||
+      !/^data\/intraday\/[a-zA-Z0-9_.-]+\.json$/.test(path) ||
+      intradayCache.has(a.symbol)
+    )
+      return;
+    try {
+      const response = await fetch("./" + path);
+      if (!response.ok) return;
+      const payload = await response.json();
+      if (
+        payload.symbol !== a.symbol ||
+        payload.asof !== a.intraday.asof ||
+        !Array.isArray(payload.bars)
+      )
+        return;
+      const parsed = intradaySeries({ ...a, intraday: { bars: payload.bars } });
+      intradayCache.set(a.symbol, parsed);
     } catch {}
   }
   function addCompare(symbol) {
@@ -851,12 +954,13 @@
     location.hash = "compare";
     renderCompare();
   }
-  function commonChart(assets, limit = 90) {
+  function commonChart(assets, limit = 90, frequency = "daily") {
+    const getSeries = frequency === "15m" ? intradaySeries : series;
     const maps = assets.map(
-      (a) => new Map(series(a).map((p) => [p.date, p.close])),
+      (a) => new Map(getSeries(a).map((p) => [p.date, p.close])),
     );
     let days = assets.length
-      ? series(assets[0])
+      ? getSeries(assets[0])
           .map((p) => p.date)
           .filter((d) => maps.every((m) => m.has(d)))
       : [];
@@ -921,7 +1025,10 @@
         "text-anchor":
           i === 0 ? "start" : i === chart.days.length - 1 ? "end" : "middle",
       });
-      t.textContent = chart.days[i];
+      t.textContent =
+        chart.days[i].length > 10
+          ? chart.days[i].slice(5, 16).replace("T", " ") + "Z"
+          : chart.days[i];
       svg.append(t);
     }
     for (const line of chart.lines) {
@@ -993,13 +1100,22 @@
       b.title = "移除 " + a.symbol;
       $("compare-tags").append(b);
     });
-    await Promise.all(assets.map(ensureSeries));
+    const frequency = $("compare-frequency").value;
+    await Promise.all(
+      assets.map(frequency === "15m" ? ensureIntraday : ensureSeries),
+    );
     if (generation !== comparisonGeneration) return;
-    const chart = commonChart(assets, Number($("compare-range").value));
+    const chart = commonChart(
+      assets,
+      Number($("compare-range").value),
+      frequency,
+    );
     plot($("compare-chart"), chart);
     $("compare-note").textContent = chart.days.length
-      ? `${chart.days[0]} → ${chart.days.at(-1)} · ${chart.days.length} 個共同觀測日 · 本幣價格重設100，Yahoo 使用供應商調整價（可能含股息），Crypto 用現貨價；未換匯或扣費，唔係策略回測。`
-      : "先加入已收集嘅標的。";
+      ? `${chart.days[0]} → ${chart.days.at(-1)} · ${chart.days.length} 個共同${frequency === "15m" ? "15分鐘bar（UTC）" : "觀測日"} · 本幣價格重設100，${frequency === "15m" ? "完整bars嘅原始價格，唔補跨市休市空格" : "Yahoo 使用供應商調整價（可能含股息），Crypto 用現貨價"}；未換匯或扣費，唔係策略回測。`
+      : frequency === "15m"
+        ? "15分鐘比較暫限核心名單；需要至少兩個共同完整bars，資料不足唔會填補。"
+        : "先加入已收集嘅標的。";
     $("export-chart").disabled = chart.days.length < 2;
   }
   async function detail(a) {
@@ -1008,6 +1124,10 @@
     const metrics = el("div", null, "detail-metrics");
     for (const [label, v] of [
       ["價格", `${num(a.price)} ${a.currency || ""}`],
+      ["1小時", pct(a.intraday?.returns?.h1)],
+      ["4小時", pct(a.intraday?.returns?.h4)],
+      [`1h 超額（${a.intraday?.benchmark || "—"}）`, pct(a.intraday?.rs?.h1)],
+      [`4h 超額（${a.intraday?.benchmark || "—"}）`, pct(a.intraday?.rs?.h4)],
       ["20日", pct(a.returns?.d20)],
       ["60日", pct(a.returns?.d60)],
       ["20日年化波幅", pct(a.vol20)],
@@ -1024,7 +1144,22 @@
         "caption",
       ),
     );
-    if (a.identity_status === "UNVERIFIED_SYMBOL_MATCH") $("asset-body").append(el("p", "Crypto 價格以 Binance 幣對為準；顯示名稱只經同代號配對，項目身份未完成獨立核實。", "caption"));
+    if (a.intraday)
+      $("asset-body").append(
+        el(
+          "p",
+          `日內分析 ${a.intraday.asof || "未取得"} · ${a.intraday.quality || "待收集"}；精確窗口見各欄提示。`,
+          "caption",
+        ),
+      );
+    if (a.identity_status === "UNVERIFIED_SYMBOL_MATCH")
+      $("asset-body").append(
+        el(
+          "p",
+          "Crypto 價格以 Binance 幣對為準；顯示名稱只經同代號配對，項目身份未完成獨立核實。",
+          "caption",
+        ),
+      );
     const chart = el("div", null, "chart");
     $("asset-body").append(chart);
     $("asset-body").append(
@@ -1109,6 +1244,7 @@
       rows = next.markets.filter((a) => typeof a.symbol === "string");
       priceCache.clear();
       relativeCache.clear();
+      intradayCache.clear();
       context = next.context?.macro ? next.context : null;
       if (!context) {
         try {
@@ -1125,7 +1261,9 @@
             : "部分覆蓋";
       $("connection").className =
         "status " +
-        (lag > 5 * 3600000 || !["OK", "COMPLETE"].includes(data.status) ? "warn" : "good");
+        (lag > 5 * 3600000 || !["OK", "COMPLETE"].includes(data.status)
+          ? "warn"
+          : "good");
       $("collected-at").textContent = hkTime(data.generated_at);
       $("footer-time").textContent = "公開快照 · " + hkTime(data.generated_at);
       $("update-note").textContent =
@@ -1156,8 +1294,14 @@
   // Exercise the exact browser calculation functions in Node without booting a DOM.
   if (typeof module === "object" && module.exports) {
     module.exports = {
-      paired, commonChart,
-      setAssets(assets) { rows = assets; priceCache.clear(); relativeCache.clear(); },
+      paired,
+      commonChart,
+      setAssets(assets) {
+        rows = assets;
+        priceCache.clear();
+        relativeCache.clear();
+        intradayCache.clear();
+      },
     };
     return;
   }
@@ -1197,6 +1341,12 @@
     if (e.key === "Enter") $("add-compare").click();
   });
   $("compare-range").addEventListener("change", renderCompare);
+  $("compare-frequency").addEventListener("change", () => {
+    const label = $("compare-frequency").value === "15m" ? "bars" : "觀測日";
+    for (const o of $("compare-range").options)
+      o.textContent = `最近 ${o.value} 個共同${label}`;
+    renderCompare();
+  });
   $("asset-detail").addEventListener("click", (e) => {
     if (e.target === $("asset-detail")) $("asset-detail").close();
   });
@@ -1237,22 +1387,32 @@
       ctx.fillStyle = styles.getPropertyValue("--panel").trim();
       ctx.fillRect(0, 0, 1960, 900);
       ctx.drawImage(img, 0, 0, 1960, 720);
-      let legendX = 35, legendY = 755;
+      let legendX = 35,
+        legendY = 755;
       ctx.font = "22px sans-serif";
-      selected.map(findAsset).filter(Boolean).forEach((a, i) => {
-        const width = ctx.measureText(a.symbol).width + 62;
-        if (legendX + width > 1900) { legendX = 35; legendY += 35; }
-        ctx.fillStyle = colors[i % colors.length];
-        ctx.fillRect(legendX, legendY - 14, 21, 5);
-        ctx.fillStyle = styles.getPropertyValue("--ink").trim();
-        ctx.fillText(a.symbol, legendX + 30, legendY);
-        legendX += width;
-      });
+      selected
+        .map(findAsset)
+        .filter(Boolean)
+        .forEach((a, i) => {
+          const width = ctx.measureText(a.symbol).width + 62;
+          if (legendX + width > 1900) {
+            legendX = 35;
+            legendY += 35;
+          }
+          ctx.fillStyle = colors[i % colors.length];
+          ctx.fillRect(legendX, legendY - 14, 21, 5);
+          ctx.fillStyle = styles.getPropertyValue("--ink").trim();
+          ctx.fillText(a.symbol, legendX + 30, legendY);
+          legendX += width;
+        });
       ctx.font = "17px sans-serif";
-      let line = "", lineY = legendY + 38;
+      let line = "",
+        lineY = legendY + 38;
       for (const char of $("compare-note").textContent) {
         if (ctx.measureText(line + char).width > 1890) {
-          ctx.fillText(line, 35, lineY); line = ""; lineY += 25;
+          ctx.fillText(line, 35, lineY);
+          line = "";
+          lineY += 25;
         }
         line += char;
       }
