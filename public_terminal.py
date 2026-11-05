@@ -23,7 +23,7 @@ UTC = timezone.utc
 ROOT = Path(__file__).resolve().parent
 USER_AGENT = "WilliamResearchTerminal/1.0 (personal public market research)"
 MAX_BODY = 12 * 1024 * 1024
-RETURN_PERIODS = (1, 5, 20, 60, 120)
+RETURN_PERIODS = (1, 3, 5, 10, 20, 60, 120)
 SMA_PERIODS = (20, 50, 200)
 STABLE_SYMBOLS = {"USDT", "USDC", "BUSD", "FDUSD", "TUSD", "USDP", "DAI", "USDD", "USDE",
                   "USD1", "USDS", "GUSD", "PYUSD", "EURC", "EURI", "PAXG", "XAUT"}
@@ -233,15 +233,15 @@ def analytics(series, annual_days):
     return returns, sma, vol20
 
 
-def paired_excess(left,right):
+def paired_excess(left,right,periods=20):
     first={row["date"]:row["close"] for row in left}
     second={row["date"]:row["close"] for row in right}
     common=sorted(first.keys() & second.keys())
-    if len(common)<21:
+    if len(common)<periods+1:
         return None,None
-    start,end=common[-21],common[-1]
+    start,end=common[-periods-1],common[-1]
     return first[end]/first[start]-second[end]/second[start],{
-        "start":start,"end":end,"common_dates":21,
+        "start":start,"end":end,"common_dates":periods+1,
         "clock_qualification":"DIFFERENT_VENUE_CLOSES_DESCRIPTIVE_ONLY"
     }
 
@@ -368,7 +368,8 @@ def freshness(row, now):
         return False
 
 
-def collect(previous, output_dir, *, max_requests=180, workers=6, force=False, refresh_universe=False, now=None):
+def collect(previous, output_dir, *, max_requests=180, workers=6, force=False,
+            refresh_universe=False, intraday_budget=24, now=None):
     now=now or utc_now()
     config=json.loads((ROOT/"terminal_universe.json").read_text())
     errors=[]
@@ -411,7 +412,9 @@ def collect(previous, output_dir, *, max_requests=180, workers=6, force=False, r
             candidates.append(instrument)
     candidates.sort(key=lambda i:(priority.get(i["symbol"],9),
                                  old.get(i["symbol"],{}).get("last_attempt",""),i["symbol"]))
-    chosen=candidates[:max_requests]
+    intraday_budget=min(intraday_budget,max(0,max_requests-1))
+    daily_budget=max_requests-intraday_budget
+    chosen=candidates[:daily_budget]
     limited=threading.Event()
     def one(instrument):
         if limited.is_set():
@@ -434,6 +437,11 @@ def collect(previous, output_dir, *, max_requests=180, workers=6, force=False, r
                 if error!="NOT_ATTEMPTED_RATE_LIMIT":
                     rows[symbol]["last_attempt"]=iso(now)
                 errors.append({"symbol":symbol,"error":error})
+    from terminal_intraday import enrich
+    intraday_coverage=enrich(
+        rows,old,instruments,output_dir,budget=intraday_budget,workers=workers,force=force,
+        clock=utc_now,fetch=fetch,write_json=write_json,active_market=active_market,limited=limited,
+    )
     markets=list(rows.values())
     finished=utc_now()
     benchmarks={s:rows.get(s,{}) for s in ("SPY","BTCUSDT","2800.HK")}
@@ -446,6 +454,15 @@ def collect(previous, output_dir, *, max_requests=180, workers=6, force=False, r
             excess,window=paired_excess(row["series"],bench.get("series",[]))
             row["rs"][key]=excess
             row["rs_window"][key]=window
+        for period in (3,10):
+            closes=[item["close"] for item in row["series"]]
+            row["returns"][f"d{period}"]=closes[-1]/closes[-period-1]-1 if len(closes)>period else None
+        row["rs_daily"]={}
+        row["rs_daily_windows"]={}
+        for period in (3,10):
+            relative,window=paired_excess(row["series"],peer.get("series",[]),period)
+            row["rs_daily"][f"d{period}"]=relative
+            row["rs_daily_windows"][f"d{period}"]=window
         row["above_sma200"]=(row.get("analysis_price")>row["sma"]["d200"]
                              if row.get("analysis_price") is not None and row["sma"].get("d200") is not None else None)
     groups=[]
@@ -475,8 +492,10 @@ def collect(previous, output_dir, *, max_requests=180, workers=6, force=False, r
         row["series_path"]="data/series/"+safe if full and path.exists() else None
         row["series"]=full[-60:]
     snapshot={
-        "schema_version":1,"generated_at":iso(finished),"status":"PARTIAL" if errors or universe["directory_errors"] or any(not r["fresh"] for r in markets) else "COMPLETE",
-        "coverage":{"groups":groups,"attempted":len(chosen),"request_budget":max_requests,"source_errors":errors,
+        "schema_version":1,"generated_at":iso(finished),"status":"PARTIAL" if errors or intraday_coverage["failed"] or universe["directory_errors"] or any(not r["fresh"] for r in markets) else "COMPLETE",
+        "coverage":{"groups":groups,"attempted":len(chosen)+intraday_coverage["attempted"],
+                    "daily_attempted":len(chosen),"daily_request_budget":daily_budget,
+                    "request_budget":max_requests,"source_errors":errors,"intraday":intraday_coverage,
                     "directory_us_available":universe["directory_us_available"],"directory_errors":universe["directory_errors"],
                     "priced_us_target":config["us_target"],"crypto_target":config["crypto_target"]},
         "markets":markets,"universe":universe,"context":{"breadth":breadth,"source_context_file":"data/context.json"},
@@ -486,6 +505,7 @@ def collect(previous, output_dir, *, max_requests=180, workers=6, force=False, r
             "volatility":"20 daily log-return sample SD annualized 252 stock/ETF/FX or365 crypto",
             "trend":"moving averages derived from available vendor daily closes; current session can be partial",
             "cadence":"15-minute target, observed timestamps and rotating histories; GitHub cron best effort",
+            "intraday":"60-name core, closed15m bars; exact contiguous UTCwindows forh1/h4; no overnight/lunch/gap filling",
             "market_gate":"approximate weekday/time cash window, provider timestamps determine freshness",
             "data_scope":"new public-source market facts and computed descriptive analytics",
         },
@@ -507,15 +527,16 @@ def main():
     parser.add_argument("--output-dir",type=Path,default=Path("public_data"))
     parser.add_argument("--max-requests",type=int,default=180)
     parser.add_argument("--workers",type=int,default=6)
+    parser.add_argument("--intraday-budget",type=int,default=24)
     parser.add_argument("--force",action="store_true")
     parser.add_argument("--refresh-universe",action="store_true")
     args=parser.parse_args()
-    if not 1<=args.max_requests<=1800 or not 1<=args.workers<=8:
-        parser.error("request budget must be1..1800 and workers1..8")
+    if not 1<=args.max_requests<=1860 or not 1<=args.workers<=8 or not 0<=args.intraday_budget<=60:
+        parser.error("total history budget must be1..1860, workers1..8 and intraday budget0..60")
     prior=args.output_dir/"latest.json"
     previous=json.loads(prior.read_text()) if prior.exists() else {}
     snapshot=collect(previous,args.output_dir,max_requests=args.max_requests,workers=args.workers,
-                     force=args.force,refresh_universe=args.refresh_universe)
+                     force=args.force,refresh_universe=args.refresh_universe,intraday_budget=args.intraday_budget)
     print(json.dumps({"status":snapshot["status"],"generated_at":snapshot["generated_at"],
                       "coverage":snapshot["coverage"],"bytes":prior.stat().st_size},ensure_ascii=False))
     return 0 if any(r["price"] is not None for r in snapshot["markets"]) else 2
