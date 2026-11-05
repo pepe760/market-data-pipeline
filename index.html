@@ -148,7 +148,11 @@
               <label
                 >排序<select id="sort">
                   <option value="rs">相對強弱</option>
+                  <option value="h1">1 小時升跌</option>
+                  <option value="h4">4 小時升跌</option>
                   <option value="d1">1 日升跌</option>
+                  <option value="d3">3 日升跌</option>
+                  <option value="d10">10 日升跌</option>
                   <option value="d5">5 日升跌</option>
                   <option value="d20">20 日升跌</option>
                   <option value="d60">60 日升跌</option>
@@ -166,6 +170,7 @@
               <label
                 >趨勢<select id="trend-filter">
                   <option value="all">全部</option>
+                  <option value="intraday">有15分鐘線</option>
                   <option value="above20">高於 20 日線</option>
                   <option value="green">20／50／200 日全綠</option>
                   <option value="red">20／50／200 日全紅</option>
@@ -230,8 +235,15 @@
                   id="asset-options"
                 ></datalist></label
               ><button type="button" class="button primary" id="add-compare">
-                加入</button
-              ><label
+                加入
+              </button>
+              <label
+                >頻率<select id="compare-frequency">
+                  <option value="daily">日線</option>
+                  <option value="15m">15 分鐘線（核心名單）</option>
+                </select></label
+              >
+              <label
                 >區間<select id="compare-range">
                   <option value="30">最近 30 個共同觀測日</option>
                   <option value="90" selected>最近 90 個共同觀測日</option>
