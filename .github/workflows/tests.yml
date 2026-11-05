@@ -20,3 +20,4 @@ jobs:
         env:
           REQUIREMENTS_FILE: ${{ matrix.requirements }}
       - run: python -m unittest discover -s tests -v
+      - run: node --test tests/test_terminal_frontend.cjs
