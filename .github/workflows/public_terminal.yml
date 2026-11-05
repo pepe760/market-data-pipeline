@@ -1,0 +1,126 @@
+name: Public market research terminal
+on:
+  workflow_dispatch:
+    inputs:
+      full_refresh:
+        description: Refresh the full configured public universe
+        type: boolean
+        default: false
+  schedule:
+    - cron: '7,22,37,52 * * * *'
+permissions:
+  contents: write
+  pages: write
+concurrency:
+  group: public-terminal-writer
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: github.repository == 'pepe760/market-data-pipeline' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: gh-pages
+          path: _site
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify terminal calculation contracts
+        run: |
+          python -m unittest discover -s tests -p 'test_public_terminal.py' -v
+          python -m unittest discover -s tests -p 'test_terminal_context.py' -v
+          node --test tests/test_terminal_frontend.cjs
+      - name: Collect bounded public market facts
+        run: |
+          if [ "$FULL_REFRESH" = "true" ]; then
+            python public_terminal.py --output-dir _site/data --max-requests 1800 --workers 6 --force --refresh-universe
+          else
+            python public_terminal.py --output-dir _site/data --max-requests 180 --workers 6
+          fi
+        env:
+          FULL_REFRESH: ${{ inputs.full_refresh }}
+      - name: Refresh public macro context when due
+        run: python terminal_context.py --output _site/data/context.json
+        env:
+          SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}
+      - name: Install reviewed terminal assets
+        run: |
+          cp terminal_site/index.html terminal_site/app.js terminal_site/style.css _site/
+          touch _site/.nojekyll
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          for name in ['latest.json', 'context.json']:
+              obj = json.loads((Path('_site/data')/name).read_text())
+              assert isinstance(obj, dict)
+          PY
+      - name: Publish snapshot to existing Pages source
+        run: |
+          git -C _site config user.name github-actions[bot]
+          git -C _site config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git -C _site add -- index.html app.js style.css .nojekyll data/
+          if ! git -C _site diff --cached --quiet; then
+            git -C _site commit -m "Refresh public market terminal"
+            git -C _site push origin HEAD:gh-pages
+          fi
+          git -C _site rev-parse HEAD > terminal_pages_commit.txt
+          python - <<'PY'
+          from datetime import datetime, timezone
+          import hashlib, json, os, subprocess, time
+          from pathlib import Path
+          latest = Path('_site/data/latest.json')
+          desired = Path('terminal_pages_commit.txt').read_text().strip()
+          snapshot = json.loads(latest.read_text())
+          receipt = {
+              'schema_version': 1, 'source_commit': os.environ['GITHUB_SHA'],
+              'pages_commit': desired, 'data_sha256': hashlib.sha256(latest.read_bytes()).hexdigest(),
+              'generated_at': snapshot['generated_at'], 'coverage': snapshot['coverage'],
+              'workflow_run': os.environ['GITHUB_RUN_ID'], 'build_status': 'REQUEST_PENDING'
+          }
+          def save():
+              Path('TERMINAL_CLOUD_ACCEPTANCE.json').write_text(json.dumps(receipt, indent=2))
+          def api(*args):
+              result = subprocess.run(['gh','api',*args], capture_output=True, text=True, timeout=35)
+              if result.returncode:
+                  raise RuntimeError('GitHub Pages API request failed')
+              return json.loads(result.stdout)
+          save()
+          try:
+              api('--method','POST','repos/pepe760/market-data-pipeline/pages/builds')
+              receipt['build_status'] = 'REQUESTED'
+              save()
+              for attempt in range(18):
+                  build = api('repos/pepe760/market-data-pipeline/pages/builds/latest')
+                  if build.get('commit') == desired:
+                      receipt['build_status'] = build.get('status')
+                      receipt['build_api_url'] = build.get('url')
+                      save()
+                      if build.get('status') == 'built':
+                          break
+                      if build.get('status') == 'errored':
+                          raise RuntimeError('Matching Pages build failed')
+                  time.sleep(10)
+              else:
+                  raise RuntimeError('Matching Pages build not confirmed within polling window')
+              receipt['verified_at_utc'] = datetime.now(timezone.utc).isoformat()
+              save()
+          except Exception as exc:
+              receipt['failure'] = type(exc).__name__
+              save()
+              raise
+          PY
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Retain cloud acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: terminal-cloud-acceptance
+          path: TERMINAL_CLOUD_ACCEPTANCE.json
+          if-no-files-found: ignore
+          retention-days: 14
