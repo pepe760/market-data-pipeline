@@ -95,7 +95,9 @@ jobs:
               api('--method','POST','repos/pepe760/market-data-pipeline/pages/builds')
               receipt['build_status'] = 'REQUESTED'
               save()
-              for attempt in range(18):
+              # A matching Pages build can take more than six minutes to finish.
+              deadline = time.monotonic() + 10 * 60
+              while time.monotonic() < deadline:
                   build = api('repos/pepe760/market-data-pipeline/pages/builds/latest')
                   if build.get('commit') == desired:
                       receipt['build_status'] = build.get('status')
