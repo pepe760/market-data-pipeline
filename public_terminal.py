@@ -27,6 +27,7 @@ USER_AGENT = "WilliamResearchTerminal/1.0 (personal public market research)"
 MAX_BODY = 12 * 1024 * 1024
 RETURN_PERIODS = (1, 3, 5, 10, 20, 60, 120)
 SMA_PERIODS = (20, 50, 200)
+NASDAQ_NOCP_SYMBOLS = {"ACAA", "AACO", "AACP"}
 STABLE_SYMBOLS = {"USDT", "USDC", "BUSD", "FDUSD", "TUSD", "USDP", "DAI", "USDD", "USDE",
                   "USD1", "USDS", "GUSD", "PYUSD", "EURC", "EURI", "PAXG", "XAUT"}
 EXCLUDED_CRYPTO = re.compile(r"tokenized|wrapped|bridged|staked|synthetic|stablecoin|liquid staking|leveraged",
@@ -488,7 +489,7 @@ def collect(previous, output_dir, *, max_requests=180, workers=6, force=False,
             return symbol,None,"NOT_ATTEMPTED_RATE_LIMIT"
         try:
             previous_row = rows[symbol]
-            if (symbol == "ACAA" and symbol in catch_up
+            if (symbol in NASDAQ_NOCP_SYMBOLS and symbol in catch_up
                     and any(error.get("error") == "US_CLOSE_NOT_AVAILABLE" for error in previous_row.get("errors", []))):
                 return symbol, nasdaq_official_close(previous_row, latest_us_close), None
             result=(binance_row(instrument,now,tickers.get(instrument["symbol"]))
