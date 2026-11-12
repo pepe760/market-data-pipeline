@@ -75,7 +75,8 @@ class TerminalTests(unittest.TestCase):
         ]
         old = [
             dict(terminal.empty_row(instrument), price=10, price_asof=stamp,
-                 analytics_asof=stamp[:10], analytics_partial=partial)
+                 analytics_asof=stamp[:10], analytics_partial=partial,
+                 series=[{"date": stamp[:10], "close": 10}])
             for instrument, stamp, partial in zip(
                 instruments,
                 ("2026-11-10T21:00:00+00:00", "2026-11-11T19:00:00+00:00",
@@ -87,7 +88,8 @@ class TerminalTests(unittest.TestCase):
 
         def refresh(instrument, _now):
             return dict(terminal.empty_row(instrument), price=11, price_asof="2026-11-11T21:00:00+00:00",
-                        analytics_asof="2026-11-11", analytics_partial=False)
+                        analytics_asof="2026-11-11", analytics_partial=False,
+                        series=[{"date": "2026-11-11", "close": 11}])
 
         with tempfile.TemporaryDirectory() as tmp, patch.object(terminal, "fetch", return_value=[]), \
              patch.object(terminal, "assemble_universe", return_value=universe), \
@@ -103,6 +105,86 @@ class TerminalTests(unittest.TestCase):
         self.assertTrue(rows["QQQ"]["fresh"])
         self.assertFalse(rows["NVDA"]["fresh"])
         self.assertEqual(result["coverage"]["daily_attempted"], 2)
+
+    def test_hong_kong_close_catches_up_after_session_without_refreshing_current_us(self):
+        now = datetime(2026, 11, 12, 14, tzinfo=timezone.utc)
+        hk = {"symbol": "2800.HK", "market": "HK", "currency": "HKD"}
+        us = {"symbol": "AAPL", "market": "US", "currency": "USD"}
+        previous = [
+            dict(terminal.empty_row(hk), price=24, price_asof="2026-11-12T02:00:00+00:00",
+                 analytics_asof="2026-11-12", analytics_partial=True,
+                 series=[{"date": "2026-11-12", "close": 24}]),
+            dict(terminal.empty_row(us), price=355, price_asof="2026-11-11T21:00:00+00:00",
+                 analytics_asof="2026-11-11", analytics_partial=False,
+                 series=[{"date": "2026-11-11", "close": 355}]),
+        ]
+        universe = {"instruments": [hk, us], "directory_us_available": 5000, "directory_errors": []}
+        close = dict(terminal.empty_row(hk), price=25, price_asof="2026-11-12T08:00:00+00:00",
+                     analytics_asof="2026-11-12", analytics_partial=False,
+                     series=[{"date": "2026-11-12", "close": 25}])
+        with tempfile.TemporaryDirectory() as tmp, patch.object(terminal, "fetch", return_value=[]), \
+             patch.object(terminal, "assemble_universe", return_value=universe), \
+             patch.object(terminal, "yahoo_row", return_value=close) as source, \
+             patch.object(terminal, "utc_now", return_value=now):
+            result = terminal.collect({"markets": previous}, Path(tmp), max_requests=1,
+                                      intraday_budget=0, workers=1, now=now)
+        source.assert_called_once_with(hk, now)
+        rows = {row["symbol"]: row for row in result["markets"]}
+        self.assertTrue(rows["2800.HK"]["fresh"])
+        self.assertEqual(rows["2800.HK"]["price"], 25)
+        self.assertTrue(rows["AAPL"]["fresh"])
+
+    def test_intraday_quote_does_not_hide_missing_prior_close(self):
+        row = {
+            "symbol": "AAPL",
+            "market": "US",
+            "price_asof": "2026-11-12T15:00:00+00:00",
+            "analytics_asof": "2026-11-12",
+            "analytics_partial": True,
+            "series": [{"date": "2026-11-12", "close": 356}],
+        }
+        self.assertTrue(terminal.missing_cash_close(row, "2026-11-11"))
+        row["series"].insert(0, {"date": "2026-11-11", "close": 355})
+        self.assertFalse(terminal.missing_cash_close(row, "2026-11-11"))
+
+    def test_cached_universe_honors_hong_kong_removals(self):
+        now = datetime(2026, 11, 12, 14, tzinfo=timezone.utc)
+        instruments = [{"symbol": "0011.HK", "market": "HK"},
+                       {"symbol": "2800.HK", "market": "HK"},
+                       {"symbol": "SPY", "market": "ETF"}]
+        previous = {"universe": {"asof": now.isoformat(), "instruments": instruments}}
+        config = {"hk": [["2800.HK", "盈富"]]}
+        result = terminal.assemble_universe(config, previous, now, [])
+        self.assertEqual([row["symbol"] for row in result["instruments"]], ["2800.HK", "SPY"])
+        self.assertEqual(len(previous["universe"]["instruments"]), 3)
+
+    def test_acaa_official_close_keeps_yahoo_history_separate(self):
+        now = datetime(2026, 11, 12, 14, tzinfo=timezone.utc)
+        instrument = {"symbol": "ACAA", "market": "US", "currency": "USD"}
+        history = [{"date": "2026-11-05", "close": 10.05, "volume": 310}]
+        old = dict(terminal.empty_row(instrument), price=10.05,
+                   price_asof="2026-11-05T21:00:00+00:00", analytics_asof="2026-11-05",
+                   series=history, errors=[{"error": "US_CLOSE_NOT_AVAILABLE"}])
+        universe = {"instruments": [instrument], "directory_us_available": 5000, "directory_errors": []}
+        table = [{"date": "11/11/2026", "price": "$10.01"}, {"date": "11/10/2026", "price": "$10"}]
+        payload = {"status": {"rCode": 200}, "data": {"nocp": {"nocpTable": table}}}
+        with tempfile.TemporaryDirectory() as tmp, patch.object(terminal, "fetch", side_effect=[[], payload]), \
+             patch.object(terminal, "assemble_universe", return_value=universe), \
+             patch.object(terminal, "utc_now", return_value=now):
+            result = terminal.collect(
+                {"markets": [old]}, Path(tmp), max_requests=1, intraday_budget=0, workers=1, now=now
+            )
+        row = result["markets"][0]
+        self.assertTrue(row["fresh"])
+        self.assertEqual(row["quality"], "OFFICIAL_CLOSE")
+        self.assertEqual(row["price"], 10.01)
+        self.assertEqual(row["price_asof"], "2026-11-11T21:00:00+00:00")
+        self.assertEqual(row["analytics_asof"], "2026-11-05")
+        self.assertEqual(row["series"], history)
+        self.assertEqual(row["official_close"]["date"], "2026-11-11")
+        with patch.object(terminal, "fetch", return_value=payload):
+            with self.assertRaisesRegex(terminal.SourceError, "NASDAQ_NOCP_UNAVAILABLE"):
+                terminal.nasdaq_official_close(old, "2026-11-12")
 
     def test_crypto_directory_excludes_stale_delisted_ticker(self):
         now=datetime(2026,11,4,15,tzinfo=timezone.utc)

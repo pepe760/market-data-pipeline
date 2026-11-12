@@ -164,7 +164,10 @@ def fresh_crypto_universe(target, tickers, now):
 def assemble_universe(config, previous, now, tickers, refresh=False):
     stored = previous.get("universe", {})
     if stored and not refresh and str(stored.get("asof", ""))[:10] == now.date().isoformat():
-        return stored
+        configured_hk = {symbol for symbol, _ in config["hk"]}
+        instruments = [row for row in stored["instruments"]
+                       if row["market"] != "HK" or row["symbol"] in configured_hk]
+        return dict(stored, instruments=instruments)
     errors = []
     directory = {}
     try:
@@ -298,6 +301,32 @@ def yahoo_row(instrument, now):
         raise SourceError("INVALID_CHART_SCHEMA") from None
 
 
+def nasdaq_official_close(row, session):
+    import exchange_calendars as xc
+
+    symbol = row["symbol"]
+    url = f"https://api.nasdaq.com/api/company/{symbol}/historical-nocp?timeframe=d5"
+    day = datetime.fromisoformat(session).strftime("%m/%d/%Y")
+    try:
+        payload = fetch(url)
+        if payload["status"]["rCode"] != 200:
+            raise SourceError("NASDAQ_NOCP_RESPONSE")
+        table = payload["data"]["nocp"]["nocpTable"]
+        prices = [number(point["price"].removeprefix("$").replace(",", ""))
+                  for point in table if point["date"] == day]
+        price, = prices
+        if price is None or price <= 0:
+            raise SourceError("NASDAQ_NOCP_PRICE")
+    except (KeyError, TypeError, ValueError, AttributeError):
+        raise SourceError("NASDAQ_NOCP_UNAVAILABLE") from None
+    session_close = xc.get_calendar("XNYS").session_close(session).to_pydatetime()
+    observed = iso(utc_now())
+    return dict(row, price=price, price_asof=iso(session_close), received_at=observed,
+                last_attempt=observed, quality="OFFICIAL_CLOSE", errors=[],
+                source_url=f"https://www.nasdaq.com/market-activity/stocks/{symbol.lower()}/historical-nocp",
+                official_close={"date": session, "price": price, "source_url": url})
+
+
 def binance_row(instrument, now, ticker, *, history=True):
     pair = instrument["symbol"]
     if not isinstance(ticker,dict) or ticker.get("symbol") != pair:
@@ -358,24 +387,30 @@ def empty_row(instrument):
                 vol20=None,analysis_price=None,series=[],rs={"spy":None,"btc":None,"peer":None},errors=[])
 
 
-def missing_us_close(row, latest_closed_session):
-    if not latest_closed_session or row["market"] not in {"US", "ETF", "Commodity"}:
+def missing_cash_close(row, latest_closed_session):
+    if not latest_closed_session:
         return False
+    zone = ZoneInfo("Asia/Hong_Kong" if row["market"] == "HK" else "America/New_York")
     try:
-        quote_day = datetime.fromisoformat(row.get("price_asof") or "").astimezone(
-            ZoneInfo("America/New_York")
-        ).date().isoformat()
+        quote_day = datetime.fromisoformat(row.get("price_asof") or "").astimezone(zone).date().isoformat()
     except (ValueError, TypeError):
         return True
+    if quote_day < latest_closed_session:
+        return True
+    official = row.get("official_close") or {}
+    if official.get("date") == latest_closed_session and (number(official.get("price")) or 0) > 0:
+        return False
     day = row.get("analytics_asof") or ""
-    return (quote_day < latest_closed_session or day < latest_closed_session
-            or (day == latest_closed_session and row.get("analytics_partial", False)))
+    return (day < latest_closed_session
+            or (day == latest_closed_session and row.get("analytics_partial", False))
+            or not any(point["date"] == latest_closed_session and (number(point["close"]) or 0) > 0
+                       for point in row.get("series", [])))
 
 
 def freshness(row, now, latest_closed_session=None):
     if row.get("price_asof") is None:
         return False
-    if missing_us_close(row, latest_closed_session):
+    if missing_cash_close(row, latest_closed_session):
         return False
     try:
         age=now-datetime.fromisoformat(row["price_asof"].replace("Z","+00:00"))
@@ -391,6 +426,10 @@ def collect(previous, output_dir, *, max_requests=180, workers=6, force=False,
     now=now or utc_now()
     closed_us_sessions = closed_sessions(now)
     latest_us_close = closed_us_sessions[-1] if closed_us_sessions else None
+    closed_hk_sessions = closed_sessions(now, "XHKG")
+    latest_hk_close = closed_hk_sessions[-1] if closed_hk_sessions else None
+    latest_close = {"US": latest_us_close, "ETF": latest_us_close,
+                    "Commodity": latest_us_close, "HK": latest_hk_close}
     config=json.loads((ROOT/"terminal_universe.json").read_text())
     errors=[]
     try:
@@ -430,7 +469,7 @@ def collect(previous, output_dir, *, max_requests=180, workers=6, force=False,
     for instrument in instruments:
         symbol=instrument["symbol"]
         prior=old.get(symbol)
-        if prior and missing_us_close(rows[symbol],latest_us_close):
+        if prior and missing_cash_close(rows[symbol], latest_close.get(instrument["market"])):
             catch_up.add(symbol)
         due=force or not prior or active_market(instrument["market"],now) or symbol in catch_up
         if due:
@@ -444,18 +483,28 @@ def collect(previous, output_dir, *, max_requests=180, workers=6, force=False,
     chosen=candidates[:daily_budget]
     limited=threading.Event()
     def one(instrument):
+        symbol = instrument["symbol"]
         if limited.is_set():
-            return instrument["symbol"],None,"NOT_ATTEMPTED_RATE_LIMIT"
+            return symbol,None,"NOT_ATTEMPTED_RATE_LIMIT"
         try:
+            previous_row = rows[symbol]
+            if (symbol == "ACAA" and symbol in catch_up
+                    and any(error.get("error") == "US_CLOSE_NOT_AVAILABLE" for error in previous_row.get("errors", []))):
+                return symbol, nasdaq_official_close(previous_row, latest_us_close), None
             result=(binance_row(instrument,now,tickers.get(instrument["symbol"]))
                     if instrument["market"]=="Crypto" else yahoo_row(instrument,now))
-            if instrument["symbol"] in catch_up and missing_us_close(result,latest_us_close):
-                raise SourceError("US_CLOSE_NOT_AVAILABLE")
-            return instrument["symbol"],result,None
+            market = instrument["market"]
+            if symbol in catch_up and missing_cash_close(result, latest_close.get(market)):
+                raise SourceError("HK_CLOSE_NOT_AVAILABLE" if market == "HK" else "US_CLOSE_NOT_AVAILABLE")
+            if previous_row.get("official_close"):
+                if result["price_asof"] <= previous_row["price_asof"]:
+                    return symbol, dict(previous_row, last_attempt=result["last_attempt"]), None
+                result["official_close"] = previous_row["official_close"]
+            return symbol,result,None
         except (SourceError,ValueError,TypeError,OverflowError) as exc:
             if isinstance(exc,SourceError) and str(exc)=="HTTP_429":
                 limited.set()
-            return instrument["symbol"],None,str(exc) if isinstance(exc,SourceError) else type(exc).__name__
+            return symbol,None,str(exc) if isinstance(exc,SourceError) else type(exc).__name__
     with ThreadPoolExecutor(max_workers=workers) as pool:
         for symbol,row,error in pool.map(one,chosen):
             if error is None:
@@ -475,7 +524,7 @@ def collect(previous, output_dir, *, max_requests=180, workers=6, force=False,
     finished=utc_now()
     benchmarks={s:rows.get(s,{}) for s in ("SPY","BTCUSDT","2800.HK")}
     for row in markets:
-        row["fresh"]=freshness(row,finished,latest_us_close)
+        row["fresh"]=freshness(row,finished,latest_close.get(row["market"]))
         peer=benchmarks["2800.HK" if row["market"]=="HK" else "BTCUSDT" if row["market"]=="Crypto" else "SPY"]
         row["rs"]={}
         row["rs_window"]={}
@@ -535,7 +584,7 @@ def collect(previous, output_dir, *, max_requests=180, workers=6, force=False,
             "trend":"moving averages derived from available vendor daily closes; current session can be partial",
             "cadence":"15-minute target, observed timestamps and rotating histories; GitHub cron best effort",
             "intraday":"60-name core, closed15m bars; exact contiguous UTCwindows forh1/h4; no overnight/lunch/gap filling",
-            "market_gate":"cash window plus bounded US close catch-up after the official session and 90-minute publication allowance",
+            "market_gate":"cash window plus bounded US and Hong Kong close catch-up after each official session and 90-minute publication allowance",
             "data_scope":"new public-source market facts and computed descriptive analytics",
         },
     }

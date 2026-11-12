@@ -28,6 +28,7 @@ Public snapshots and historical site revisions live in the `gh-pages` branch. Th
 - `data/intraday/<symbol-sha256-prefix>.json`: up to64 completed OHLCV bars with exact UTC boundaries, symbol/asof binding and no filled gaps.
 - `data/context.json`: government economic observations with native units/frequency, current-revised-vintage limitations, derived formula inputs, available derivatives context, source links and unconfigured interfaces.
 - Daily Yahoo history uses a single vendor-adjusted basis where supplied; otherwise a declared raw basis. Binance uses USDT spot prices. Current sessions can be incomplete. Quotes are distinct from analysis prices and dates.
+- The US and Hong Kong exchanges have separate completed-session checks. On ACAA, a missing Yahoo close can be resolved by an exact-date Nasdaq Official Closing Price. Its timestamp denotes session close, and Yahoo analytics retain their own dates and source.
 - Relative return uses identical start/end dates shared by asset and benchmark. Different venue closes on the same date are still asynchronous; this is descriptive analysis, not execution evidence.
 - Price history, present-day membership and revised macro observations do not establish strict PIT data, an executable strategy, OOS performance or an investment recommendation.
 

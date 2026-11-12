@@ -280,6 +280,7 @@
     const q = typeof a.quality === "object" ? a.quality.status : a.quality;
     const labels = {
       OBSERVED: "已觀測",
+      OFFICIAL_CLOSE: "Nasdaq 官方收市價",
       SOURCE_ERROR_PREVIOUS_RETAINED: "來源失敗，保留原值",
       SOURCE_ERROR: "來源失敗",
       AWAITING_FIRST_OBSERVATION: "待首次收集",
@@ -382,6 +383,8 @@
     );
     tr.append(sp);
     const dt = cell(a.price_asof ? hkTime(a.price_asof) : "未取得");
+    if (a.quality === "OFFICIAL_CLOSE")
+      dt.title = "報價時點係交易時段收市時間";
     dt.append(
       el(
         "small",

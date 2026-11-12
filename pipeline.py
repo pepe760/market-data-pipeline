@@ -54,14 +54,16 @@ def universe(value):
     return value
 
 
-def closed_sessions(asof):
+def closed_sessions(asof, calendar_name='XNYS'):
     import exchange_calendars as xc
-    cal = xc.get_calendar('XNYS')
+    cal = xc.get_calendar(calendar_name)
     start = (asof - dt.timedelta(days=21)).date()
     sessions = cal.sessions_in_range(str(start), str(asof.date()))
-    # Allow 90 minutes after the official close, including early-close sessions.
+    # XHKG's calendar ends at the continuous close. Its auction can run ten
+    # more minutes, including half-days, before the publication allowance.
+    publication_delay = dt.timedelta(minutes=100 if calendar_name == 'XHKG' else 90)
     return [str(s.date()) for s in sessions
-            if cal.session_close(s).to_pydatetime() + dt.timedelta(minutes=90) <= asof]
+            if cal.session_close(s).to_pydatetime() + publication_delay <= asof]
 
 
 def yahoo_symbol(ticker, session=None):
