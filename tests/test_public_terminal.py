@@ -67,6 +67,43 @@ class TerminalTests(unittest.TestCase):
         self.assertFalse(terminal.active_market("US",now))
         self.assertFalse(terminal.freshness({"market":"US","price_asof":None},now))
 
+    def test_preopen_run_catches_up_missing_completed_us_session(self):
+        now = datetime(2026, 11, 12, 9, 58, tzinfo=timezone.utc)
+        instruments = [
+            {"symbol": symbol, "market": market, "currency": "USD"}
+            for symbol, market in (("SPY", "ETF"), ("AAPL", "US"), ("QQQ", "ETF"), ("NVDA", "US"))
+        ]
+        old = [
+            dict(terminal.empty_row(instrument), price=10, price_asof=stamp,
+                 analytics_asof=stamp[:10], analytics_partial=partial)
+            for instrument, stamp, partial in zip(
+                instruments,
+                ("2026-11-10T21:00:00+00:00", "2026-11-11T19:00:00+00:00",
+                 "2026-11-11T21:00:00+00:00", "2026-11-10T21:00:00+00:00"),
+                (False, True, False, False),
+            )
+        ]
+        universe = {"instruments": instruments, "directory_us_available": 5000, "directory_errors": []}
+
+        def refresh(instrument, _now):
+            return dict(terminal.empty_row(instrument), price=11, price_asof="2026-11-11T21:00:00+00:00",
+                        analytics_asof="2026-11-11", analytics_partial=False)
+
+        with tempfile.TemporaryDirectory() as tmp, patch.object(terminal, "fetch", return_value=[]), \
+             patch.object(terminal, "assemble_universe", return_value=universe), \
+             patch.object(terminal, "yahoo_row", side_effect=refresh) as fetch, \
+             patch.object(terminal, "utc_now", return_value=now):
+            result = terminal.collect(
+                {"markets": old}, Path(tmp), max_requests=2, intraday_budget=0, workers=1, now=now
+            )
+        self.assertEqual([call.args[0]["symbol"] for call in fetch.call_args_list], ["SPY", "AAPL"])
+        rows = {row["symbol"]: row for row in result["markets"]}
+        self.assertTrue(rows["SPY"]["fresh"])
+        self.assertTrue(rows["AAPL"]["fresh"])
+        self.assertTrue(rows["QQQ"]["fresh"])
+        self.assertFalse(rows["NVDA"]["fresh"])
+        self.assertEqual(result["coverage"]["daily_attempted"], 2)
+
     def test_crypto_directory_excludes_stale_delisted_ticker(self):
         now=datetime(2026,11,4,15,tzinfo=timezone.utc)
         rows=[{"symbol":"BTCUSDT","quoteVolume":"100","lastPrice":"10","closeTime":now.timestamp()*1000},

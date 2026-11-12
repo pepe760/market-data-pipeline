@@ -19,6 +19,8 @@ from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
+from pipeline import closed_sessions
+
 UTC = timezone.utc
 ROOT = Path(__file__).resolve().parent
 USER_AGENT = "WilliamResearchTerminal/1.0 (personal public market research)"
@@ -356,8 +358,24 @@ def empty_row(instrument):
                 vol20=None,analysis_price=None,series=[],rs={"spy":None,"btc":None,"peer":None},errors=[])
 
 
-def freshness(row, now):
+def missing_us_close(row, latest_closed_session):
+    if not latest_closed_session or row["market"] not in {"US", "ETF", "Commodity"}:
+        return False
+    try:
+        quote_day = datetime.fromisoformat(row.get("price_asof") or "").astimezone(
+            ZoneInfo("America/New_York")
+        ).date().isoformat()
+    except (ValueError, TypeError):
+        return True
+    day = row.get("analytics_asof") or ""
+    return (quote_day < latest_closed_session or day < latest_closed_session
+            or (day == latest_closed_session and row.get("analytics_partial", False)))
+
+
+def freshness(row, now, latest_closed_session=None):
     if row.get("price_asof") is None:
+        return False
+    if missing_us_close(row, latest_closed_session):
         return False
     try:
         age=now-datetime.fromisoformat(row["price_asof"].replace("Z","+00:00"))
@@ -371,6 +389,8 @@ def freshness(row, now):
 def collect(previous, output_dir, *, max_requests=180, workers=6, force=False,
             refresh_universe=False, intraday_budget=24, now=None):
     now=now or utc_now()
+    closed_us_sessions = closed_sessions(now)
+    latest_us_close = closed_us_sessions[-1] if closed_us_sessions else None
     config=json.loads((ROOT/"terminal_universe.json").read_text())
     errors=[]
     try:
@@ -385,6 +405,7 @@ def collect(previous, output_dir, *, max_requests=180, workers=6, force=False,
     old={row["symbol"]:row for row in previous.get("markets",[])}
     tickers={row["symbol"]:row for row in ticker_rows if isinstance(row,dict) and "symbol" in row}
     priority={"SPY":0,"BTCUSDT":1,"QQQ":2,"SOXX":3,"GLD":4,"TLT":5,"2800.HK":6}
+    core_us = set(config["us_core"])
     rows={i["symbol"]:dict(old.get(i["symbol"],empty_row(i)),**i) for i in instruments}
     for row in rows.values():
         path=output_dir/"series"/(hashlib.sha256(row["symbol"].encode()).hexdigest()[:20]+".json")
@@ -405,12 +426,18 @@ def collect(previous, output_dir, *, max_requests=180, workers=6, force=False,
                 row.update(price=price,price_asof=iso(datetime.fromtimestamp(clock/1000,UTC)),
                            received_at=iso(now),price_only_refreshed_at=iso(now))
     candidates=[]
+    catch_up=set()
     for instrument in instruments:
-        prior=old.get(instrument["symbol"])
-        due=force or not prior or active_market(instrument["market"],now)
+        symbol=instrument["symbol"]
+        prior=old.get(symbol)
+        if prior and missing_us_close(rows[symbol],latest_us_close):
+            catch_up.add(symbol)
+        due=force or not prior or active_market(instrument["market"],now) or symbol in catch_up
         if due:
             candidates.append(instrument)
     candidates.sort(key=lambda i:(priority.get(i["symbol"],9),
+                                 i["symbol"] not in catch_up,
+                                 not (i["symbol"] in catch_up and i["symbol"] in core_us),
                                  old.get(i["symbol"],{}).get("last_attempt",""),i["symbol"]))
     intraday_budget=min(intraday_budget,max(0,max_requests-1))
     daily_budget=max_requests-intraday_budget
@@ -422,6 +449,8 @@ def collect(previous, output_dir, *, max_requests=180, workers=6, force=False,
         try:
             result=(binance_row(instrument,now,tickers.get(instrument["symbol"]))
                     if instrument["market"]=="Crypto" else yahoo_row(instrument,now))
+            if instrument["symbol"] in catch_up and missing_us_close(result,latest_us_close):
+                raise SourceError("US_CLOSE_NOT_AVAILABLE")
             return instrument["symbol"],result,None
         except (SourceError,ValueError,TypeError,OverflowError) as exc:
             if isinstance(exc,SourceError) and str(exc)=="HTTP_429":
@@ -446,7 +475,7 @@ def collect(previous, output_dir, *, max_requests=180, workers=6, force=False,
     finished=utc_now()
     benchmarks={s:rows.get(s,{}) for s in ("SPY","BTCUSDT","2800.HK")}
     for row in markets:
-        row["fresh"]=freshness(row,finished)
+        row["fresh"]=freshness(row,finished,latest_us_close)
         peer=benchmarks["2800.HK" if row["market"]=="HK" else "BTCUSDT" if row["market"]=="Crypto" else "SPY"]
         row["rs"]={}
         row["rs_window"]={}
@@ -506,7 +535,7 @@ def collect(previous, output_dir, *, max_requests=180, workers=6, force=False,
             "trend":"moving averages derived from available vendor daily closes; current session can be partial",
             "cadence":"15-minute target, observed timestamps and rotating histories; GitHub cron best effort",
             "intraday":"60-name core, closed15m bars; exact contiguous UTCwindows forh1/h4; no overnight/lunch/gap filling",
-            "market_gate":"approximate weekday/time cash window, provider timestamps determine freshness",
+            "market_gate":"cash window plus bounded US close catch-up after the official session and 90-minute publication allowance",
             "data_scope":"new public-source market facts and computed descriptive analytics",
         },
     }
