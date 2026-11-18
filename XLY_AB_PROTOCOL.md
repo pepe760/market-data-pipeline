@@ -2,6 +2,8 @@
 
 2026 年 11 月 18 日鎖定。第一個合資格訊號係 2026 年 11 月 30 日美東收市。研究內容喺 [市場終端 Watchlist](https://pepe760.github.io/market-data-pipeline/#watchlist)。
 
+額外宏觀指標嘅歷史覆核另見 [XLY 宏觀因子研究](XLY_MACRO_RESEARCH.md)。
+
 | 預測 | 輸入 |
 |---|---|
 | A | XLY 對 SPY 過去 3 個月同 20 個交易日嘅相對回報，以及原有 Risk-Off 狀態 |

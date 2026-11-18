@@ -1,0 +1,13 @@
+{
+  "baseline_verified_rows": 73,
+  "labeled_windows": 112,
+  "complete_macro_windows": 105,
+  "historical_last_exit": "2026-10-01",
+  "primary_candidate_count": 8,
+  "quarter_months": [
+    11,
+    2,
+    5,
+    8
+  ]
+}

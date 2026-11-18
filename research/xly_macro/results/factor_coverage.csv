@@ -1,0 +1,9 @@
+Factor,Series,Version,Rows
+Curve,T10Y2Y,Daily archive; previous-session cutoff,112
+RealYield,DFII10,Daily archive; previous-session cutoff,112
+Credit,BAA10Y,Daily archive; previous-session cutoff,112
+Claims,ICSA,ALFRED vintage by previous US session,111
+CoreCPI,CPILFESL,ALFRED vintage by previous US session,110
+Payrolls,PAYEMS,ALFRED vintage by previous US session,112
+Reserves,WRESBAL,ALFRED vintage by previous US session,112
+DurablePCE,PCEDGC96,ALFRED vintage by previous US session,108
