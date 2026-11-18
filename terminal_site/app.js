@@ -1288,6 +1288,24 @@
     if ($("asset-title").textContent.startsWith(a.symbol + " ·"))
       plot(chart, commonChart([a], 180));
   }
+  function weeklyOutlookStage(deadlines, now = Date.now()) {
+    const next = deadlines.findIndex((deadline) => Date.parse(deadline) > now);
+    return next === -1 ? deadlines.length : next;
+  }
+  function renderWeeklyOutlook() {
+    const panel = $("weekly-sector-outlook");
+    if (!panel) return;
+    const steps = [...panel.querySelectorAll("[data-week-stage]")];
+    const stage = weeklyOutlookStage(steps.map((step) => step.querySelector("time").dateTime));
+    const label = steps[stage]?.dataset.weekStage ?? "第 4 週比較收市已過";
+    const status = $("weekly-sector-status");
+    if (status.textContent !== label) status.textContent = label;
+    steps.forEach((step, index) => {
+      step.classList.toggle("reached", index < stage);
+      if (index === stage) step.setAttribute("aria-current", "step");
+      else step.removeAttribute("aria-current");
+    });
+  }
   function render() {
     if (!data && active !== "watchlist") {
       $("market-view").hidden = true;
@@ -1312,6 +1330,9 @@
     ].forEach((id) => ($(id).hidden = true));
     $("xly-ab").hidden = active !== "watchlist";
     $("sector-factor-study").hidden = active !== "watchlist";
+    const weeklyOutlook = $("weekly-sector-outlook");
+    if (weeklyOutlook) weeklyOutlook.hidden = active !== "watchlist";
+    if (active === "watchlist") renderWeeklyOutlook();
     renderQuotes();
     if (active === "overview") {
       $("overview").hidden = false;
@@ -1411,6 +1432,7 @@
       paired,
       commonChart,
       trackerRows,
+      weeklyOutlookStage,
       setAssets(assets) {
         rows = assets;
         priceCache.clear();
@@ -1548,6 +1570,8 @@
   route();
   load();
   setInterval(() => {
-    if (!document.hidden) load();
+    if (document.hidden) return;
+    if (active === "watchlist") renderWeeklyOutlook();
+    load();
   }, 60000);
 })();

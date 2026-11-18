@@ -13,8 +13,8 @@
       content="default-src 'self'; connect-src 'self' https://api.github.com; img-src 'self' data: blob:; object-src 'none'; base-uri 'none'; form-action 'none'"
     />
     <title>市場研究台 · William's Market Lab</title>
-    <link rel="stylesheet" href="./style.css" />
-    <script src="./app.js?v=20261118" defer></script>
+    <link rel="stylesheet" href="./style.css?v=weekly20261118" />
+    <script src="./app.js?v=weekly20261118" defer></script>
   </head>
   <body>
     <header class="header">
@@ -169,6 +169,138 @@
               <a class="text-link" href="https://github.com/pepe760/market-data-pipeline/blob/main/XLY_MACRO_RESEARCH.md">查看方法、完整結果及所需數據 ↗</a>
             </details>
           </article>
+          <article class="panel" id="weekly-sector-outlook" aria-labelledby="weekly-sector-title" hidden>
+            <div class="section-title">
+              <h2 id="weekly-sector-title">Risk、Fed 同未來 1–4 週展望</h2>
+              <span class="badge" id="weekly-sector-status" aria-live="polite">第 0 週 · 等待比較起點</span>
+            </div>
+            <p class="caption">訊號以美股 11 月 17 日收市後鎖定。實績以 11 月 18 日美股收市為比較起點。以下係香港時間。</p>
+            <ol class="weekly-timeline" aria-label="預測比較日期">
+              <li data-week-stage="第 0 週 · 等待比較起點" aria-current="step">
+                <strong>比較起點</strong>
+                <time datetime="2026-11-19T05:00:00+08:00">11 月 19 日 05:00</time>
+                <small>美股 11/18 收市</small>
+              </li>
+              <li data-week-stage="第 1 週 · 進行中">
+                <strong>第 1 週</strong>
+                <time datetime="2026-11-26T05:00:00+08:00">11 月 26 日 05:00</time>
+                <small>5 個交易日</small>
+              </li>
+              <li data-week-stage="第 2 週 · 進行中">
+                <strong>第 2 週</strong>
+                <time datetime="2026-12-04T05:00:00+08:00">12 月 4 日 05:00</time>
+                <small>10 個交易日</small>
+              </li>
+              <li data-week-stage="第 3 週 · 進行中">
+                <strong>第 3 週</strong>
+                <time datetime="2026-12-11T05:00:00+08:00">12 月 11 日 05:00</time>
+                <small>15 個交易日 · 進度點</small>
+              </li>
+              <li data-week-stage="第 4 週 · 進行中">
+                <strong>第 4 週</strong>
+                <time datetime="2026-12-18T05:00:00+08:00">12 月 18 日 05:00</time>
+                <small>20 個交易日</small>
+              </li>
+            </ol>
+            <div class="weekly-legend">
+              <span><i class="weekly-swatch weekly-benchmark" aria-hidden="true"></i>所有歷史星期二</span>
+              <span><i class="weekly-swatch weekly-joint" aria-hidden="true"></i>Risk-off ＋ Fed 偏鷹</span>
+            </div>
+            <div class="weekly-chart-grid">
+              <figure class="weekly-chart">
+                <figcaption>SPY 平均回報（%）</figcaption>
+                <div class="weekly-chart-axis" aria-hidden="true"><span>−1</span><span>0</span><span>+1</span></div>
+                <dl>
+                  <div class="weekly-chart-row">
+                    <dt>第 1 週<small>66 次</small></dt>
+                    <dd>
+                    <div class="weekly-row-value">
+                      <span class="weekly-track" aria-hidden="true"><progress class="weekly-bar weekly-benchmark positive" value="0.22" max="1" aria-hidden="true"></progress></span>
+                      <span class="weekly-benchmark positive"><span class="weekly-sr-only">所有歷史星期二 </span>+0.22%</span>
+                    </div>
+                    <div class="weekly-row-value">
+                      <span class="weekly-track" aria-hidden="true"><progress class="weekly-bar weekly-joint negative" value="0.58" max="1" aria-hidden="true"></progress></span>
+                      <span class="weekly-joint negative"><span class="weekly-sr-only">聯合訊號 </span>−0.58%</span>
+                    </div>
+                    </dd>
+                  </div>
+                  <div class="weekly-chart-row">
+                    <dt>第 2 週<small>65 次</small></dt>
+                    <dd>
+                    <div class="weekly-row-value">
+                      <span class="weekly-track" aria-hidden="true"><progress class="weekly-bar weekly-benchmark positive" value="0.42" max="1" aria-hidden="true"></progress></span>
+                      <span class="weekly-benchmark positive"><span class="weekly-sr-only">所有歷史星期二 </span>+0.42%</span>
+                    </div>
+                    <div class="weekly-row-value">
+                      <span class="weekly-track" aria-hidden="true"><progress class="weekly-bar weekly-joint negative" value="0.66" max="1" aria-hidden="true"></progress></span>
+                      <span class="weekly-joint negative"><span class="weekly-sr-only">聯合訊號 </span>−0.66%</span>
+                    </div>
+                    </dd>
+                  </div>
+                  <div class="weekly-chart-row">
+                    <dt>第 4 週<small>63 次</small></dt>
+                    <dd>
+                    <div class="weekly-row-value">
+                      <span class="weekly-track" aria-hidden="true"><progress class="weekly-bar weekly-benchmark positive" value="0.77" max="1" aria-hidden="true"></progress></span>
+                      <span class="weekly-benchmark positive"><span class="weekly-sr-only">所有歷史星期二 </span>+0.77%</span>
+                    </div>
+                    <div class="weekly-row-value">
+                      <span class="weekly-track" aria-hidden="true"><progress class="weekly-bar weekly-joint negative" value="0.42" max="1" aria-hidden="true"></progress></span>
+                      <span class="weekly-joint negative"><span class="weekly-sr-only">聯合訊號 </span>−0.42%</span>
+                    </div>
+                    </dd>
+                  </div>
+                </dl>
+              </figure>
+              <figure class="weekly-chart">
+                <figcaption>防守組相對週期組，對沖後（pp）</figcaption>
+                <div class="weekly-chart-axis" aria-hidden="true"><span>−1</span><span>0</span><span>+1</span></div>
+                <dl>
+                  <div class="weekly-chart-row">
+                    <dt>第 1 週<small>66 次</small></dt>
+                    <dd>
+                    <div class="weekly-row-value">
+                      <span class="weekly-track" aria-hidden="true"><progress class="weekly-bar weekly-benchmark negative" value="0.01" max="1" aria-hidden="true"></progress></span>
+                      <span class="weekly-benchmark negative"><span class="weekly-sr-only">所有歷史星期二 </span>−0.01 pp</span>
+                    </div>
+                    <div class="weekly-row-value">
+                      <span class="weekly-track" aria-hidden="true"><progress class="weekly-bar weekly-joint negative" value="0.07" max="1" aria-hidden="true"></progress></span>
+                      <span class="weekly-joint negative"><span class="weekly-sr-only">聯合訊號 </span>−0.07 pp</span>
+                    </div>
+                    </dd>
+                  </div>
+                  <div class="weekly-chart-row">
+                    <dt>第 2 週<small>65 次</small></dt>
+                    <dd>
+                    <div class="weekly-row-value">
+                      <span class="weekly-track" aria-hidden="true"><progress class="weekly-bar weekly-benchmark positive" value="0" max="1" aria-hidden="true"></progress></span>
+                      <span class="weekly-benchmark positive"><span class="weekly-sr-only">所有歷史星期二 </span>0.00 pp</span>
+                    </div>
+                    <div class="weekly-row-value">
+                      <span class="weekly-track" aria-hidden="true"><progress class="weekly-bar weekly-joint positive" value="0.06" max="1" aria-hidden="true"></progress></span>
+                      <span class="weekly-joint positive"><span class="weekly-sr-only">聯合訊號 </span>+0.06 pp</span>
+                    </div>
+                    </dd>
+                  </div>
+                  <div class="weekly-chart-row">
+                    <dt>第 4 週<small>63 次</small></dt>
+                    <dd>
+                    <div class="weekly-row-value">
+                      <span class="weekly-track" aria-hidden="true"><progress class="weekly-bar weekly-benchmark positive" value="0.02" max="1" aria-hidden="true"></progress></span>
+                      <span class="weekly-benchmark positive"><span class="weekly-sr-only">所有歷史星期二 </span>+0.02 pp</span>
+                    </div>
+                    <div class="weekly-row-value">
+                      <span class="weekly-track" aria-hidden="true"><progress class="weekly-bar weekly-joint positive" value="0.73" max="1" aria-hidden="true"></progress></span>
+                      <span class="weekly-joint positive"><span class="weekly-sr-only">聯合訊號 </span>+0.73 pp</span>
+                    </div>
+                    </dd>
+                  </div>
+                </dl>
+              </figure>
+            </div>
+            <p class="caption">圖表係歷史均值，每列樣本數指聯合訊號。四週防守組相對回報嘅 95% 區間為 −0.42 至 +1.97 個百分點。</p>
+            <a class="text-link" href="https://github.com/pepe760/market-data-pipeline/blob/main/SECTOR_WEEKLY_OUTLOOK_20261118.md">查看回測、展望及驗證方法 ↗</a>
+          </article>
           <article class="panel" id="sector-factor-study" aria-labelledby="sector-factor-title" hidden>
             <div class="section-title">
               <h2 id="sector-factor-title">ETF 因子研究</h2>
@@ -204,11 +336,6 @@
               </div>
               <p class="caption">原有 SectorETF02 配置加做 5 個百分點輪動後，全期 CAGR 14.31%，原版 14.43%。風險升溫期間防守組較抗跌。</p>
               <a class="text-link" href="https://github.com/pepe760/market-data-pipeline/blob/main/SECTOR_ROTATION_RESEARCH.md">查看 Fed 事件、板塊機制及完整回測 ↗</a>
-            </details>
-            <details class="xly-macro-study">
-              <summary>Risk、Fed 同未來 1–4 週展望 · 2026-11-18</summary>
-              <p class="caption">以 11 月 17 日美股收市訊號，歷史類比支持波動偏高。SPY 首兩週方向接近五五開，四週防守組相對週期組略有優勢。</p>
-              <a class="text-link" href="https://github.com/pepe760/market-data-pipeline/blob/main/SECTOR_WEEKLY_OUTLOOK_20261118.md">查看 5、10、20 日歷史驗證及展望 ↗</a>
             </details>
           </article>
           <article class="panel">

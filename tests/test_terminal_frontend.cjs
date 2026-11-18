@@ -118,3 +118,13 @@ test("XLY tracker keeps pending forecasts and joins existing scores by signal da
     { ...first, actual: 0 },
   ]);
 });
+
+test("weekly outlook advances only at each scheduled US close in Hong Kong time", () => {
+  const deadlines = ["2026-11-19T05:00:00+08:00","2026-11-26T05:00:00+08:00","2026-12-04T05:00:00+08:00","2026-12-11T05:00:00+08:00","2026-12-18T05:00:00+08:00"];
+  assert.equal(math.weeklyOutlookStage(deadlines, Date.parse("2026-11-18T17:23:00+08:00")), 0);
+  deadlines.forEach((deadline, index) => {
+    const close = Date.parse(deadline);
+    assert.equal(math.weeklyOutlookStage(deadlines, close - 1), index);
+    assert.equal(math.weeklyOutlookStage(deadlines, close), index + 1);
+  });
+});
