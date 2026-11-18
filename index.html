@@ -14,7 +14,7 @@
     />
     <title>市場研究台 · William's Market Lab</title>
     <link rel="stylesheet" href="./style.css" />
-    <script src="./app.js" defer></script>
+    <script src="./app.js?v=20261118" defer></script>
   </head>
   <body>
     <header class="header">
@@ -168,6 +168,26 @@
               <p class="caption">實質利率去掉最有利一季後亦輸畀 B。下一輪資料優先補實質收入、家庭借貸壓力同盈利預期修訂。</p>
               <a class="text-link" href="https://github.com/pepe760/market-data-pipeline/blob/main/XLY_MACRO_RESEARCH.md">查看方法、完整結果及所需數據 ↗</a>
             </details>
+          </article>
+          <article class="panel" id="sector-factor-study" aria-labelledby="sector-factor-title" hidden>
+            <div class="section-title">
+              <h2 id="sector-factor-title">ETF 因子研究</h2>
+              <span class="caption">2026-11-18</span>
+            </div>
+            <p class="caption">三個月 SPY beta 對沖。每隻 ETF 加一個因子，測試 73 個月底樣本外預測，其中 24 個季度窗口互不重疊。正數代表較原模型嘅平方預測誤差下降。</p>
+            <div class="xly-macro-table" tabindex="0" role="region" aria-label="四隻 ETF 因子嘅預測結果">
+              <table>
+                <thead><tr><th scope="col">ETF</th><th scope="col">新增因子</th><th scope="col">月度</th><th scope="col">固定季度</th></tr></thead>
+                <tbody>
+                  <tr><th scope="row">SOXX</th><td>全球晶片銷售</td><td>−6.42%</td><td>−6.54%</td></tr>
+                  <tr><th scope="row">ITB</th><td>美國新屋銷售</td><td>−2.06%</td><td>−6.22%</td></tr>
+                  <tr><th scope="row">XLF</th><td>銀行淨息差</td><td>−15.75%</td><td>−20.76%</td></tr>
+                  <tr><th scope="row">IJR</th><td>小企貸款標準</td><td>−5.42%</td><td>+1.49%</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <p class="caption">四項未通過覆核。IJR 剔除最有利一季後較原模型差 0.73%。一年期只有 4 個互不重疊窗口。</p>
+            <a class="text-link" href="https://github.com/pepe760/market-data-pipeline/blob/main/SECTOR_NEXT_FACTORS.md">查看回測方法、數據來源及一年期覆核 ↗</a>
           </article>
           <article class="panel">
             <div class="filters">
