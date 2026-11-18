@@ -325,6 +325,22 @@ h3 {
 #xly-ab-history .empty {
   padding: 8px 0;
 }
+.xly-macro-study {
+  margin-top: 14px;
+  padding-top: 11px;
+  border-top: 1px solid var(--line);
+}
+.xly-macro-study summary {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 650;
+}
+.xly-macro-table {
+  overflow-x: auto;
+}
+.xly-macro-table table {
+  min-width: 330px;
+}
 .text-link {
   color: var(--primary);
   font-size: 11px;
