@@ -104,7 +104,7 @@
       "COMPARE / PRICE PATH",
       "相同日期重設 100，方便比較價格路徑。",
     ],
-    watchlist: ["我的觀察", "YOUR WATCHLIST", "個人觀察名單存喺呢個瀏覽器。XLY 研究記錄由 GitHub 更新。"],
+    watchlist: ["我的觀察", "YOUR WATCHLIST", "個人觀察名單存喺呢個瀏覽器。ETF 研究記錄由 GitHub 更新。"],
     coverage: [
       "收集與方法",
       "DATA OPERATIONS",
@@ -1311,6 +1311,7 @@
       "coverage-view",
     ].forEach((id) => ($(id).hidden = true));
     $("xly-ab").hidden = active !== "watchlist";
+    $("sector-factor-study").hidden = active !== "watchlist";
     renderQuotes();
     if (active === "overview") {
       $("overview").hidden = false;

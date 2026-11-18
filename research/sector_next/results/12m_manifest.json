@@ -1,0 +1,11 @@
+{
+  "candidate_count": 4,
+  "horizon_months": 12,
+  "primary_training_min": 36,
+  "primary_new_factor_cap_sd": 3,
+  "disjoint_signal_months": [
+    11
+  ],
+  "last_exit": "2026-10-01",
+  "source_rows": 412
+}
