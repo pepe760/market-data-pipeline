@@ -898,3 +898,143 @@ dialog::backdrop {
     display: grid;
   }
 }
+
+.weekly-timeline {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(124px, 1fr));
+  gap: 8px;
+  list-style: none;
+  margin: 12px 0 16px;
+  padding: 0;
+}
+.weekly-timeline li {
+  border: 1px solid var(--line);
+  border-top: 3px solid var(--line);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+.weekly-timeline li[aria-current="step"] {
+  background: var(--soft);
+  border-color: var(--primary);
+}
+.weekly-timeline li.reached {
+  border-top-color: var(--primary);
+}
+.weekly-timeline strong, .weekly-timeline time, .weekly-timeline small {
+  display: block;
+}
+.weekly-timeline time {
+  font: 650 12px/1.8 var(--mono);
+}
+.weekly-timeline small, .weekly-chart-row small, .weekly-chart-axis, .weekly-legend {
+  color: var(--muted);
+  font-size: 11px;
+}
+.weekly-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 17px;
+  margin-bottom: 8px;
+}
+.weekly-swatch {
+  display: inline-block;
+  width: 11px;
+  height: 7px;
+  border-radius: 2px;
+  background: var(--muted);
+  margin-right: 5px;
+}
+.weekly-swatch.weekly-joint {
+  background: linear-gradient(90deg, var(--negative) 50%, var(--positive) 50%);
+}
+.weekly-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.weekly-chart-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 325px), 1fr));
+  gap: 12px;
+}
+.weekly-chart {
+  --week-label: 51px;
+  --week-value: 57px;
+  margin: 0;
+  padding: 13px 12px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.weekly-chart figcaption {
+  font-size: 13px;
+  font-weight: 650;
+}
+.weekly-chart-axis {
+  display: flex;
+  justify-content: space-between;
+  margin: 7px var(--week-value) 0 var(--week-label);
+  font-family: var(--mono);
+}
+.weekly-chart dl, .weekly-chart dd {
+  margin: 0;
+}
+.weekly-chart-row {
+  display: grid;
+  grid-template-columns: var(--week-label) minmax(0, 1fr);
+  align-items: center;
+  padding: 6px 0;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+}
+.weekly-chart-row dt small {
+  display: block;
+}
+.weekly-row-value {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--week-value);
+  align-items: center;
+  text-align: right;
+  font: 600 11px/1.45 var(--mono);
+}
+.weekly-track {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: center;
+  height: 16px;
+  background: linear-gradient(90deg, transparent calc(50% - .5px), var(--line) calc(50% - .5px), var(--line) calc(50% + .5px), transparent calc(50% + .5px));
+}
+.weekly-chart .weekly-benchmark {
+  color: var(--muted);
+}
+.weekly-chart .weekly-joint.positive {
+  color: var(--positive);
+}
+.weekly-chart .weekly-joint.negative {
+  color: var(--negative);
+}
+.weekly-bar {
+  appearance: none;
+  width: 100%;
+  height: 6px;
+  border: 0;
+  background: transparent;
+}
+.weekly-bar.negative {
+  grid-column: 1;
+  transform: scaleX(-1);
+}
+.weekly-bar.positive {
+  grid-column: 2;
+}
+.weekly-bar::-webkit-progress-bar {
+  background: transparent;
+}
+.weekly-bar::-webkit-progress-value {
+  background: currentColor;
+}
+.weekly-bar::-moz-progress-bar {
+  background: currentColor;
+}
