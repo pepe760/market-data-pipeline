@@ -106,3 +106,15 @@ test("invalid intraday observations do not create synthetic points", () => {
   math.setAssets([a]);
   assert.deepEqual(math.commonChart([a], 90, "15m").days, []);
 });
+test("XLY tracker keeps pending forecasts and joins existing scores by signal date", () => {
+  const first = { signal: "2026-11-30", entry: "2026-12-01", exit: "2027-03-01" };
+  const second = { signal: "2026-12-31", entry: "2027-01-04", exit: "2027-04-01" };
+  const snapshot = {
+    forecasts: [first, null, second, { ...second, exit: "not a date" }],
+    scores: [null, { signal: first.signal, actual: 0 }, { signal: "2026-10-30", actual: 0.12 }],
+  };
+  assert.deepEqual(math.trackerRows(snapshot), [
+    { ...second, actual: null },
+    { ...first, actual: 0 },
+  ]);
+});

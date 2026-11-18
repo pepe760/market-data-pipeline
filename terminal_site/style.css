@@ -312,6 +312,19 @@ h3 {
   color: var(--muted);
   margin: 7px 0;
 }
+#xly-ab-summary table {
+  min-width: 390px;
+}
+#xly-ab th:first-child,
+#xly-ab td:first-child {
+  text-align: left;
+}
+#xly-ab-history {
+  margin-block: 12px;
+}
+#xly-ab-history .empty {
+  padding: 8px 0;
+}
 .text-link {
   color: var(--primary);
   font-size: 11px;

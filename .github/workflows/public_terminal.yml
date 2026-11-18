@@ -37,6 +37,7 @@ jobs:
           python -m unittest discover -s tests -p 'test_public_terminal.py' -v
           python -m unittest discover -s tests -p 'test_terminal_intraday.py' -v
           python -m unittest discover -s tests -p 'test_terminal_context.py' -v
+          python -m unittest discover -s tests -p 'test_xly_ab_tracker.py' -v
           node --test tests/test_terminal_frontend.cjs
       - name: Collect bounded public market facts
         run: |
@@ -51,6 +52,9 @@ jobs:
         run: python terminal_context.py --output _site/data/context.json
         env:
           SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}
+      - name: Update XLY paper research tracker when due
+        timeout-minutes: 3
+        run: python xly_ab_tracker.py --output _site/data/xly_ab.json
       - name: Install reviewed terminal assets
         run: |
           cp terminal_site/index.html terminal_site/app.js terminal_site/style.css _site/
@@ -58,7 +62,7 @@ jobs:
           python - <<'PY'
           import json
           from pathlib import Path
-          for name in ['latest.json', 'context.json']:
+          for name in ['latest.json', 'context.json', 'xly_ab.json']:
               obj = json.loads((Path('_site/data')/name).read_text())
               assert isinstance(obj, dict)
           PY

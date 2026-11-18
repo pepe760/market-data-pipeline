@@ -9,7 +9,7 @@ The site reads its own public GitHub snapshot automatically. Neither opening the
 - **市場總覽**: reference cross-asset watch table, breadth of the collected universe and five-session US relative movers.
 - **美股／港股／Crypto／外匯／大宗商品／ETF**: search, sector and trend filters, sort and change benchmark. Prices, analysis dates and incomplete sessions remain visible.
 - **走勢比較**: add up to ten collected symbols, compare common dates rebased to100, and download a PNG. Different native currencies and adjusted/spot bases are explicitly qualified.
-- **我的觀察**: star symbols. This preference stays only in that browser's local storage.
+- **我的觀察**: 星標名單留喺目前瀏覽器。XLY 三個月 A/B 紙上研究由 GitHub 自動更新，顯示訊號、到期回報及預測誤差。
 - **宏觀與流動性**: dated government observations and descriptive derived series, plus explicitly incomplete source connections.
 - **收集與方法**: target, stored, fresh, stale and failed coverage; formula and source limitations.
 
@@ -27,6 +27,7 @@ Public snapshots and historical site revisions live in the `gh-pages` branch. Th
 - `data/series/<symbol-sha256-prefix>.json`: longer daily series loaded on demand for comparison/details. The symbol is also bound inside the file.
 - `data/intraday/<symbol-sha256-prefix>.json`: up to64 completed OHLCV bars with exact UTC boundaries, symbol/asof binding and no filled gaps.
 - `data/context.json`: government economic observations with native units/frequency, current-revised-vintage limitations, derived formula inputs, available derivatives context, source links and unconfigured interfaces.
+- `data/xly_ab.json`: XLY 三個月 A/B 研究嘅公共狀態、已鎖定訊號、已到期結果同配對評分。舊紀錄沿用 `gh-pages` 版本。見 [XLY_AB_PROTOCOL.md](XLY_AB_PROTOCOL.md)。
 - Daily Yahoo history uses a single vendor-adjusted basis where supplied; otherwise a declared raw basis. Binance uses USDT spot prices. Current sessions can be incomplete. Quotes are distinct from analysis prices and dates.
 - The US and Hong Kong exchanges have separate completed-session checks. For ACAA, AACO and AACP, a missing Yahoo close can be resolved by an exact-date Nasdaq Official Closing Price. Its timestamp denotes session close, and Yahoo analytics retain their own dates and source.
 - Relative return uses identical start/end dates shared by asset and benchmark. Different venue closes on the same date are still asynchronous; this is descriptive analysis, not execution evidence.
