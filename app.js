@@ -104,7 +104,7 @@
       "COMPARE / PRICE PATH",
       "相同日期重設 100，方便比較價格路徑。",
     ],
-    watchlist: ["我的觀察", "YOUR WATCHLIST", "觀察名單只存喺呢個瀏覽器。"],
+    watchlist: ["我的觀察", "YOUR WATCHLIST", "個人觀察名單存喺呢個瀏覽器。XLY 研究記錄由 GitHub 更新。"],
     coverage: [
       "收集與方法",
       "DATA OPERATIONS",
@@ -117,6 +117,9 @@
     active = "overview",
     page = 0,
     loading = false;
+  let xlyTracker = null,
+    xlyTrackerState = "loading",
+    xlyTrackerRequest = null;
   let watches = new Set(
     loadLocal("wml-watch-v1", []).filter((x) => typeof x === "string"),
   );
@@ -662,6 +665,106 @@
       }
     }
   }
+  const trackerStatuses = {
+    waiting_for_signal: "等候首個月底訊號",
+    pending_data: "等候核實輸入數據",
+    tracking: "追蹤中",
+    missed_signal: "已過入場收市，今期未能登記",
+  };
+  const isIsoDay = (value) =>
+    typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value);
+  function trackerRows(payload) {
+    const actual = new Map(
+      payload.scores
+        .filter((r) => r && isIsoDay(r.signal) && finite(r.actual))
+        .map((r) => [r.signal, r.actual]),
+    );
+    return payload.forecasts
+      .filter((r) => r && isIsoDay(r.signal) && isIsoDay(r.entry) && isIsoDay(r.exit))
+      .map((r) => ({ ...r, actual: actual.get(r.signal) ?? null }))
+      .sort((a, b) => b.signal.localeCompare(a.signal));
+  }
+  function renderXlyTracker() {
+    const status = $("xly-ab-status"), dates = $("xly-ab-dates"),
+      summary = $("xly-ab-summary"), history = $("xly-ab-history");
+    clear(summary);
+    clear(history);
+    dates.textContent = "";
+    $("xly-ab-source").hidden = !xlyTracker;
+    if (!xlyTracker) {
+      status.className = xlyTrackerState === "loading" ? "badge" : "badge warn";
+      status.textContent = xlyTrackerState === "loading" ? "讀取中" : "暫未取得";
+      dates.textContent = xlyTrackerState === "loading"
+        ? "讀取 GitHub 追蹤記錄。"
+        : "GitHub 追蹤記錄暫未取得，請稍後刷新。";
+      return;
+    }
+    const state = xlyTracker.status;
+    status.className = "badge " + (state === "tracking" && xlyTrackerState !== "stale" ? "good" : "warn");
+    status.textContent = Object.hasOwn(trackerStatuses, state)
+      ? trackerStatuses[state]
+      : "狀態待更新";
+    const dateLabels = [];
+    if (isIsoDay(xlyTracker.next_signal_date))
+      dateLabels.push("下次美股月底訊號 " + xlyTracker.next_signal_date);
+    if (typeof xlyTracker.generated_at === "string")
+      dateLabels.push("更新 " + hkTime(xlyTracker.generated_at));
+    if (xlyTrackerState === "stale") dateLabels.push("保留上次讀取記錄");
+    dates.textContent = dateLabels.join(" · ");
+    const validation = xlyTracker.validation || {};
+    const scoreRows = [["所有月底窗口", validation.monthly], ["互不重疊季度", validation.quarterly]]
+      .map(([label, result]) => {
+        const tr = el("tr");
+        tr.append(
+          cell(label),
+          cell(Number.isSafeInteger(result?.n) && result.n >= 0 ? result.n : "—"),
+          cell(pct(result?.improvement_vs_a), tone(result?.improvement_vs_a)),
+          cell(pct(result?.improvement_vs_mean), tone(result?.improvement_vs_mean)),
+        );
+        return tr;
+      });
+    table(["評分樣本", "已結算", "B 對 A 誤差改善", "B 對歷史平均誤差改善"], scoreRows, summary)
+      .setAttribute("aria-label", "XLY 前瞻預測評分");
+    const records = trackerRows(xlyTracker);
+    if (!records.length) {
+      history.append(el("p", "暫未有已登記嘅前瞻預測。", "empty"));
+      return;
+    }
+    history.append(el("h3", "最近前瞻預測（美股日期）"));
+    const log = el("div");
+    const returns = records.slice(0, 12).map((r) => {
+      const tr = el("tr"), signal = cell(r.signal);
+      if (r.quarter_phase === true) signal.append(el("small", "季度評分"));
+      if (typeof r.recorded_at === "string") signal.title = "登記時間 " + hkTime(r.recorded_at);
+      tr.append(signal, cell(r.entry), cell(r.exit), cell(pct(r.a)), cell(pct(r.b)),
+        cell(pct(r.mean)), cell(num(r.beta)),
+        cell(finite(r.actual) ? pct(r.actual) : "待結算", tone(r.actual)));
+      return tr;
+    });
+    table(["訊號", "入場", "到期", "A 預測", "B 預測", "歷史平均", "SPY beta", "實際對沖回報"], returns, log)
+      .setAttribute("aria-label", "XLY 最近前瞻預測及實際對沖回報");
+    history.append(log);
+  }
+  function refreshXlyTracker() {
+    if (xlyTrackerRequest) return xlyTrackerRequest;
+    xlyTrackerRequest = (async () => {
+      try {
+        const response = await fetch("./data/xly_ab.json", { cache: "no-store" });
+        if (!response.ok) throw Error("tracker unavailable");
+        const payload = await response.json();
+        if (payload?.schema_version !== 1 || !Array.isArray(payload.forecasts) || !Array.isArray(payload.scores))
+          throw Error("invalid tracker schema");
+        xlyTracker = payload;
+        xlyTrackerState = "available";
+      } catch {
+        xlyTrackerState = xlyTracker ? "stale" : "unavailable";
+      } finally {
+        xlyTrackerRequest = null;
+      }
+      if (active === "watchlist") renderXlyTracker();
+    })();
+    return xlyTrackerRequest;
+  }
   function contextCard(label, value, unit, date, status, url, points) {
     const c = el("div", null, "context-card");
     c.append(
@@ -1186,7 +1289,10 @@
       plot(chart, commonChart([a], 180));
   }
   function render() {
-    if (!data) return;
+    if (!data && active !== "watchlist") {
+      $("market-view").hidden = true;
+      return;
+    }
     const info = views[active] || views.overview;
     $("page-title").textContent = info[0];
     $("eyebrow").textContent = info[1];
@@ -1204,6 +1310,7 @@
       "compare-view",
       "coverage-view",
     ].forEach((id) => ($(id).hidden = true));
+    $("xly-ab").hidden = active !== "watchlist";
     renderQuotes();
     if (active === "overview") {
       $("overview").hidden = false;
@@ -1219,6 +1326,7 @@
       renderCoverage();
     } else {
       $("market-view").hidden = false;
+      if (active === "watchlist") renderXlyTracker();
       renderMarket(true);
     }
   }
@@ -1227,9 +1335,11 @@
     if (!views[active]) active = "overview";
     page = 0;
     render();
+    if (active === "watchlist") refreshXlyTracker();
   }
   async function load() {
     if (loading) return;
+    if (active === "watchlist") refreshXlyTracker();
     loading = true;
     $("refresh").disabled = true;
     $("connection").textContent = "更新中";
@@ -1299,6 +1409,7 @@
     module.exports = {
       paired,
       commonChart,
+      trackerRows,
       setAssets(assets) {
         rows = assets;
         priceCache.clear();
