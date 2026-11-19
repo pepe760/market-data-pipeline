@@ -291,6 +291,17 @@ def run_result(status, options=False, pending_closes=None, overdue_closes=None):
     return 2, 'Private batch saved with incomplete coverage; inspect private quality report.'
 
 
+def archive_basis_matches(ticker, current_rows, archived):
+    """Active names need an actual shared price anchor; never mix split scales."""
+    if ticker in RETIRED_AFTER:
+        return True  # bounded final-session observations, never a successor
+    common = [(row, archived[(ticker, row['session'])]) for row in current_rows
+              if row['ticker'] == ticker and (ticker, row['session']) in archived]
+    return bool(common) and all(
+        math.isclose(row['values'][key], prior['values'][key], rel_tol=1e-6, abs_tol=1e-6)
+        for row, prior in common for key in ('Close', 'Adj Close'))
+
+
 def collect(config, dest, archived=None):
     import yfinance as yf
     asof = now()
@@ -356,9 +367,10 @@ def collect(config, dest, archived=None):
                             rejected += 1
                     seen |= seen2
             recovered=[]
+            basis_matches = archive_basis_matches(ticker, prices, archived)
             for day in sorted(set(expected)-seen):
                 saved=archived.get((ticker,day))
-                if saved:
+                if saved and basis_matches:
                     prices.append(dict(saved, recovery='VERIFIED_PRIOR_BATCH'))
                     seen.add(day); recovered.append(day)
             missing = sorted(set(expected) - seen)
@@ -378,6 +390,7 @@ def collect(config, dest, archived=None):
                          rejected_rows=rejected, rejected_details=rejected_details,
                          provider_symbol=symbol,
                          recovered_sessions=recovered,
+                         archive_basis_matched=basis_matches,
                          status=price_check_status(missing, bool(seen), confirmed, pending, overdue))
             if refetched_missing:
                 check['refetched_missing_sessions'] = refetched_missing
@@ -531,36 +544,56 @@ def rclone(*args):
         raise RuntimeError(reason)
 
 
-def archived_price_rows(target, base):
-    """Recover only validated observations from hash-verified private batches."""
+def archived_price_rows(target, base, tickers=None):
+    """Recover exact missing observations from at most eight verified price batches.
+
+    Never extrapolate, replace a live finite bar or advance available_at. The
+    bounded search can leave gaps, which remain PARTIAL in the normal checks.
+    """
     result=subprocess.run(['rclone','lsf',target+'batches','--dirs-only'],capture_output=True,timeout=120)
     if result.returncode: raise RuntimeError('transfer')
     names=sorted(n.rstrip('/') for n in result.stdout.decode().splitlines() if RUN.fullmatch(n.rstrip('/')))
     sessions=closed_sessions(now())
+    requested = set(tickers) if tickers is not None else {'WBD', 'KVUE', 'PSKY'}
     required = {
         (ticker, session)
-        for ticker in ('WBD', 'KVUE')
+        for ticker in requested
         for session in sessions
-        if session <= RETIRED_AFTER[ticker]
-    } | {('PSKY', session) for session in sessions if session < '2026-10-06'}
+        if session <= RETIRED_AFTER.get(ticker, '9999-12-31')
+    }
     rows={}
     if not required: return rows
+    needed = {key for key in required if key[0] in RETIRED_AFTER or key[1] != sessions[-1]}
+    if not needed: needed = required
+    checked = 0
     for name in reversed(names):
-        if required <= rows.keys(): break
+        if needed <= rows.keys() or checked >= 8: break
         if name[:8] < sessions[0].replace('-',''): break
         folder=base/'history'/name; folder.mkdir(parents=True)
         rclone('copyto',target+'batches/'+name+'/manifest.json',folder/'manifest.json')
         manifest=json.loads((folder/'manifest.json').read_text())
-        if 'options.jsonl' in str(manifest): continue
+        if 'options.jsonl' in manifest.get('files', {}): continue
+        checked += 1
         rclone('copy',target+'batches/'+name,folder)
         verify(folder)
+        valid = {}
         for line in (folder/'prices.jsonl').read_text().splitlines():
             saved=json.loads(line); ticker=saved['ticker']; day=saved['session']
             if (ticker, day) not in required: continue
             try:
                 price_row(ticker,day,{**saved['values'],**saved.get('actions',{})},saved['available_at'])
             except (ValueError,KeyError): continue
-            rows.setdefault((ticker,day),dict(saved,recovery_batch=name))
+            valid[(ticker, day)] = dict(saved,recovery_batch=name)
+        # One coherent prior batch per active ticker. Do not assemble a price
+        # scale from different revisions. Cover all historical sessions before
+        # the latest expected close; the live overlap is checked later.
+        for ticker in requested:
+            if ticker not in RETIRED_AFTER:
+                historical = {(ticker, day) for day in (sessions[:-1] or sessions)}
+                if any(key[0] == ticker for key in rows) or not historical <= valid.keys():
+                    continue
+            for key, saved in valid.items():
+                if key[0] == ticker: rows.setdefault(key, saved)
     return rows
 
 
@@ -585,7 +618,7 @@ def cloud(options=False):
         dest = base / (now().strftime('%Y%m%dT%H%M%SZ-') + uuid.uuid4().hex[:12])
         dest.mkdir()
         STAGE = 'read_verified_history'
-        archived = {} if options else archived_price_rows(target,base)
+        archived = {} if options else archived_price_rows(target,base,config['prices'])
         STAGE = 'collect_and_serialize'
         status = options_collector.collect(config, dest) if options else collect(config, dest,archived)
         STAGE = 'seal'

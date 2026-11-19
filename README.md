@@ -16,6 +16,19 @@ The exchange calendar excludes non-sessions and unfinished sessions. Scheduling
 is best effort, not an SLA. A rolling 21-calendar-day fetch does not recover
 arbitrarily old outages or historical news; keep the gap records.
 
+Before fetching prices, the collector reads at most eight recent committed
+price batches (skipping option batches), checks their full manifests and hashes,
+and validates observations for the current private universe and completed-session
+window. If a current Yahoo read and its retry omit a previously archived session,
+that exact earlier observation can be reused. Its original `available_at`, source,
+price basis and `recovery_batch` remain visible; current finite bars take priority.
+Active tickers use one coherent prior batch covering all pre-latest sessions,
+and at least one live overlapping Close/Adj Close must match the archive basis.
+A split-scale mismatch or no shared price anchor leaves the gap unresolved.
+This is archive coverage recovery, not a new vendor observation or independent
+cross-check. Any session never captured, invalid row or hash failure still fails
+closed. News and option snapshots are never recovered this way.
+
 Prices use Yahoo via yfinance, explicitly separate split-adjusted vendor Close
 from dividend-adjusted Adj Close. Neither is labelled raw, and neither is silently
 merged into Sharadar. Each batch records retrieval time as `available_at`:

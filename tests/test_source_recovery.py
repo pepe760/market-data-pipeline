@@ -426,3 +426,67 @@ class RecoveryTests(unittest.TestCase):
              patch.object(p.time, 'sleep'):
             self.assertEqual(p.collect({'prices':['AAPL'],'events':[],'as_of':'2026-10-08'}, Path(temp)), 'COMPLETE')
         self.assertEqual(yf.Ticker.return_value.history.call_count, 1)
+
+
+class ActiveTickerArchiveTests(unittest.TestCase):
+    def make_archive(self, root, rows):
+        batch = root / '20261118T113412Z-0123456789ab'
+        batch.mkdir()
+        for name in p.FILES:
+            (batch / name).write_text('')
+        (batch / 'prices.jsonl').write_text(''.join(json.dumps(r) + '\n' for r in rows))
+        p.seal(batch)
+        return batch
+
+    def read_archive(self, root, archive, sessions):
+        listing = subprocess.CompletedProcess([], 0, stdout=(archive.name + '/\n').encode())
+        def copy(command, source, dest):
+            if command == 'copyto': shutil.copyfile(archive / Path(source).name, dest)
+            else: shutil.copytree(archive, dest, dirs_exist_ok=True)
+        with patch.object(p, 'closed_sessions', return_value=sessions), \
+             patch.object(p.subprocess, 'run', return_value=listing), \
+             patch.object(p, 'rclone', side_effect=copy):
+            return p.archived_price_rows('test:', root / 'readback', ['SNDK'])
+
+    def test_active_ticker_recovers_only_previously_captured_days(self):
+        sessions = ['2026-11-16', '2026-11-17', '2026-11-18']
+        observed = '2026-11-18T11:34:12Z'
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            rows = [p.price_row('SNDK', d, GOOD, observed) for d in sessions[:2]]
+            rows.append(p.price_row('AAPL', sessions[0], GOOD, observed))
+            rows.append(p.price_row('SNDK', '2026-11-13', GOOD, observed))
+            archive = self.make_archive(root, rows)
+            recovered = self.read_archive(root, archive, sessions)
+            self.assertEqual(set(recovered), {('SNDK', d) for d in sessions[:2]})
+            live = dict(GOOD, Open=10.25)
+            status, quality, output, _ = collect_history(
+                [Frame([(sessions[1], live), (sessions[2], GOOD)])] * 2,
+                ['SNDK'], sessions, recovered)
+            self.assertEqual(status, 'COMPLETE')
+            self.assertEqual(quality['checks'][0]['recovered_sessions'], sessions[:1])
+            by_day = {r['session']: r for r in output}
+            self.assertEqual(by_day[sessions[0]]['available_at'], observed)
+            self.assertEqual(by_day[sessions[0]]['recovery_batch'], archive.name)
+            self.assertEqual(by_day[sessions[1]]['values']['Open'], 10.25)
+            self.assertNotIn('recovery', by_day[sessions[1]])
+            # A day never stored is still a gap even if older dates recover.
+            status, quality, _, _ = collect_history([Frame([])] * 2, ['SNDK'], sessions, recovered)
+            self.assertEqual(status, 'PARTIAL')
+            self.assertEqual(quality['checks'][0]['missing_sessions'], sessions)
+
+    def test_corrupt_archive_cannot_supply_active_ticker_prices(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            archive = self.make_archive(root, [p.price_row('SNDK', '2026-11-17', GOOD, '2026-11-18T01:00:00Z')])
+            with (archive / 'prices.jsonl').open('a') as handle: handle.write('{}\n')
+            with self.assertRaises(ValueError):
+                self.read_archive(root, archive, ['2026-11-17'])
+
+    def test_split_scale_mismatch_cannot_reuse_an_active_archive(self):
+        saved = p.price_row('SNDK', '2026-11-17', GOOD, '2026-11-18T01:00:00Z')
+        earlier = p.price_row('SNDK', '2026-11-16', GOOD, '2026-11-18T01:00:00Z')
+        live = p.price_row('SNDK', '2026-11-17', {**GOOD, 'Close':5, 'Adj Close':5, 'Low':4}, 'now')
+        self.assertFalse(p.archive_basis_matches('SNDK', [live],
+            {('SNDK', '2026-11-17'):saved, ('SNDK', '2026-11-16'):earlier}))
+        self.assertFalse(p.archive_basis_matches('SNDK', [], {('SNDK', '2026-11-16'):earlier}))
