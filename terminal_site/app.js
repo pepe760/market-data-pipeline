@@ -1328,6 +1328,8 @@
       "compare-view",
       "coverage-view",
     ].forEach((id) => ($(id).hidden = true));
+    const reboundLink = $("spy-rebound-link");
+    if (reboundLink) reboundLink.hidden = active !== "watchlist";
     $("xly-ab").hidden = active !== "watchlist";
     $("sector-factor-study").hidden = active !== "watchlist";
     const weeklyOutlook = $("weekly-sector-outlook");
