@@ -285,16 +285,41 @@ def yahoo_row(instrument, now):
         price_asof = datetime.fromtimestamp(stamp, UTC)
         if received - price_asof > timedelta(days=8):
             raise SourceError("PRICE_MORE_THAN_8_DAYS_OLD")
-        partial = series[-1]["date"] == received.astimezone(zone).date().isoformat()
-        close_at = meta.get("currentTradingPeriod",{}).get("regular",{}).get("end")
-        if close_at and received.timestamp() > close_at + 900:
-            partial = False
+        calendar = {"US": "XNYS", "ETF": "XNYS", "HK": "XHKG"}.get(instrument["market"])
+        session_close = None
+        quote_reaches_close = None
+        if calendar:
+            # currentTradingPeriod can already describe the NEXT session.
+            # Certify cash closes against the exchange calendar and the same
+            # publication allowance used by the catch-up gate, including half-days.
+            completed = closed_sessions(received, calendar)
+            last_complete = completed[-1] if completed else None
+            import exchange_calendars as xc
+            cal = xc.get_calendar(calendar)
+            if not cal.is_session(series[-1]["date"]):
+                raise SourceError("CASH_NON_SESSION_BAR")
+            session_close = cal.session_close(series[-1]["date"]).to_pydatetime()
+            quote_reaches_close = price_asof >= session_close
+            # A cached same-date intraday quote is not upgraded by elapsed time.
+            partial = (last_complete is None or series[-1]["date"] > last_complete
+                       or not quote_reaches_close)
+            completion_basis = calendar + ("_CLOSE_PLUS_100_MIN" if calendar == "XHKG" else "_CLOSE_PLUS_90_MIN")
+        else:
+            last_complete = None
+            partial = series[-1]["date"] == received.astimezone(zone).date().isoformat()
+            close_at = meta.get("currentTradingPeriod",{}).get("regular",{}).get("end")
+            if close_at and received.timestamp() > close_at + 900:
+                partial = False
+            completion_basis = "VENDOR_TRADING_PERIOD"
         returns, sma, vol = analytics(series, 252)
         return dict(instrument, currency=meta.get("currency", instrument["currency"]), price=price,
                     price_asof=iso(price_asof), received_at=iso(received), last_attempt=iso(received),
                     returns=returns, sma=sma, vol20=vol, analysis_price=series[-1]["close"],
                     analytics_asof=series[-1]["date"], analytics_partial=partial, analytics_observed_at=iso(received),
                     analytics_basis="Yahoo vendor adjusted daily close" if use_adjusted else "Yahoo vendor daily close (unadjusted fallback for entire series)",
+                    analytics_completion_basis=completion_basis, analytics_last_completed_session=last_complete,
+                    analytics_session_close=iso(session_close) if session_close else None,
+                    analytics_quote_reaches_close=quote_reaches_close,
                     series=series, source_url=url, quality="OBSERVED", errors=[])
     except (KeyError, IndexError, TypeError, ValueError, OverflowError) as exc:
         if isinstance(exc, SourceError):
@@ -486,36 +511,47 @@ def collect(previous, output_dir, *, max_requests=180, workers=6, force=False,
     def one(instrument):
         symbol = instrument["symbol"]
         if limited.is_set():
-            return symbol,None,"NOT_ATTEMPTED_RATE_LIMIT"
+            return symbol,None,"NOT_ATTEMPTED_RATE_LIMIT",None
+        close_check = None
         try:
             previous_row = rows[symbol]
             if (symbol in NASDAQ_NOCP_SYMBOLS and symbol in catch_up
                     and any(error.get("error") == "US_CLOSE_NOT_AVAILABLE" for error in previous_row.get("errors", []))):
-                return symbol, nasdaq_official_close(previous_row, latest_us_close), None
+                return symbol, nasdaq_official_close(previous_row, latest_us_close), None, None
             result=(binance_row(instrument,now,tickers.get(instrument["symbol"]))
                     if instrument["market"]=="Crypto" else yahoo_row(instrument,now))
             market = instrument["market"]
             if symbol in catch_up and missing_cash_close(result, latest_close.get(market)):
+                close_check = {
+                    "expected_session": latest_close.get(market),
+                    "quote_asof": result.get("price_asof"),
+                    "analytics_asof": result.get("analytics_asof"),
+                    "analytics_partial": result.get("analytics_partial"),
+                    "completion_basis": result.get("analytics_completion_basis"),
+                    "session_close": result.get("analytics_session_close"),
+                    "quote_reaches_close": result.get("analytics_quote_reaches_close"),
+                }
                 raise SourceError("HK_CLOSE_NOT_AVAILABLE" if market == "HK" else "US_CLOSE_NOT_AVAILABLE")
             if previous_row.get("official_close"):
                 if result["price_asof"] <= previous_row["price_asof"]:
-                    return symbol, dict(previous_row, last_attempt=result["last_attempt"]), None
+                    return symbol, dict(previous_row, last_attempt=result["last_attempt"]), None, None
                 result["official_close"] = previous_row["official_close"]
-            return symbol,result,None
+            return symbol,result,None,None
         except (SourceError,ValueError,TypeError,OverflowError) as exc:
             if isinstance(exc,SourceError) and str(exc)=="HTTP_429":
                 limited.set()
-            return symbol,None,str(exc) if isinstance(exc,SourceError) else type(exc).__name__
+            return symbol,None,str(exc) if isinstance(exc,SourceError) else type(exc).__name__,close_check
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        for symbol,row,error in pool.map(one,chosen):
+        for symbol,row,error,close_check in pool.map(one,chosen):
             if error is None:
                 rows[symbol]=row
             else:
+                detail = {"close_check": close_check} if close_check is not None else {}
                 rows[symbol].update(quality="SOURCE_ERROR_PREVIOUS_RETAINED" if symbol in old else "SOURCE_ERROR",
-                                    errors=[{"asof":iso(now),"error":error}])
+                                    errors=[{"asof":iso(now),"error":error,**detail}])
                 if error!="NOT_ATTEMPTED_RATE_LIMIT":
                     rows[symbol]["last_attempt"]=iso(now)
-                errors.append({"symbol":symbol,"error":error})
+                errors.append({"symbol":symbol,"error":error,**detail})
     from terminal_intraday import enrich
     intraday_coverage=enrich(
         rows,old,instruments,output_dir,budget=intraday_budget,workers=workers,force=force,

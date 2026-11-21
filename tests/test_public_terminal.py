@@ -9,6 +9,92 @@ import public_terminal as terminal
 
 
 class TerminalTests(unittest.TestCase):
+    def cash_chart(self, received, session, market="ETF", quote_end=None):
+        zone = "Asia/Hong_Kong" if market == "HK" else "America/New_York"
+        opened = datetime.fromisoformat(session + ("T01:30:00+00:00" if market == "HK" else "T14:30:00+00:00"))
+        quote = min(received, datetime.fromisoformat(session + (quote_end or ("T08:00:00+00:00" if market == "HK" else "T21:00:00+00:00"))))
+        payload = {"chart": {"result": [{
+            "meta": {"symbol": "TEST", "currency": "HKD" if market == "HK" else "USD",
+                     "regularMarketTime": quote.timestamp(), "regularMarketPrice": 101,
+                     "exchangeTimezoneName": zone,
+                     # Simulate a provider advancing its metadata to the next session.
+                     "currentTradingPeriod": {"regular": {"end": received.timestamp()+259200}}},
+            "timestamp": [opened.timestamp()],
+            "indicators": {"quote": [{"close": [101], "volume": [100]}],
+                           "adjclose": [{"adjclose": [100]}]}}]}}
+        instrument = {"symbol": "TEST", "market": market, "currency": "USD"}
+        with patch.object(terminal, "fetch", return_value=payload), patch.object(terminal, "utc_now", return_value=received):
+            return terminal.yahoo_row(instrument, received)
+
+    def test_completed_cash_close_ignores_next_session_metadata(self):
+        now = datetime(2026, 11, 20, 22, 31, tzinfo=timezone.utc)
+        row = self.cash_chart(now, "2026-11-20")
+        self.assertFalse(row["analytics_partial"])
+        self.assertEqual(row["analytics_completion_basis"], "XNYS_CLOSE_PLUS_90_MIN")
+        self.assertFalse(terminal.missing_cash_close(row, "2026-11-20"))
+
+    def test_cash_close_stays_partial_until_publication_allowance(self):
+        now = datetime(2026, 11, 20, 22, 29, tzinfo=timezone.utc)
+        row = self.cash_chart(now, "2026-11-20")
+        self.assertTrue(row["analytics_partial"])
+        self.assertTrue(terminal.missing_cash_close(row, "2026-11-20"))
+
+    def test_current_intraday_daily_bar_is_not_certified_as_close(self):
+        now = datetime(2026, 11, 20, 18, tzinfo=timezone.utc)
+        row = self.cash_chart(now, "2026-11-20")
+        self.assertTrue(row["analytics_partial"])
+        self.assertEqual(row["analytics_last_completed_session"], "2026-11-19")
+
+    def test_half_day_uses_actual_exchange_close(self):
+        now = datetime(2026, 11, 27, 19, 31, tzinfo=timezone.utc)
+        row = self.cash_chart(now, "2026-11-27", quote_end="T18:00:00+00:00")
+        self.assertFalse(row["analytics_partial"])
+        self.assertEqual(row["analytics_last_completed_session"], "2026-11-27")
+        self.assertEqual(row["analytics_session_close"], "2026-11-27T18:00:00+00:00")
+
+    def test_elapsed_time_does_not_upgrade_cached_intraday_quote(self):
+        now = datetime(2026, 11, 20, 22, 31, tzinfo=timezone.utc)
+        row = self.cash_chart(now, "2026-11-20", quote_end="T15:00:00+00:00")
+        self.assertTrue(row["analytics_partial"])
+        self.assertFalse(row["analytics_quote_reaches_close"])
+        self.assertTrue(terminal.missing_cash_close(row, "2026-11-20"))
+
+    def test_cash_holiday_bar_is_rejected(self):
+        now = datetime(2026, 11, 26, 22, 31, tzinfo=timezone.utc)
+        with self.assertRaisesRegex(terminal.SourceError, "CASH_NON_SESSION_BAR"):
+            self.cash_chart(now, "2026-11-26")
+
+    def test_hong_kong_auction_and_publication_allowance(self):
+        before = datetime(2026, 11, 20, 9, 39, tzinfo=timezone.utc)
+        after = datetime(2026, 11, 20, 9, 41, tzinfo=timezone.utc)
+        self.assertTrue(self.cash_chart(before, "2026-11-20", "HK")["analytics_partial"])
+        row = self.cash_chart(after, "2026-11-20", "HK")
+        self.assertFalse(row["analytics_partial"])
+        self.assertEqual(row["analytics_completion_basis"], "XHKG_CLOSE_PLUS_100_MIN")
+
+    def test_rejected_close_records_clocks_and_retains_previous_values(self):
+        now = datetime(2026, 11, 21, 2, 30, tzinfo=timezone.utc)
+        instrument = {"symbol": "SPY", "market": "ETF", "currency": "USD"}
+        old = dict(terminal.empty_row(instrument), price=99, price_asof="2026-11-19T21:00:00+00:00",
+                   analytics_asof="2026-11-19", analytics_partial=False,
+                   series=[{"date": "2026-11-19", "close": 99}])
+        incomplete = dict(old, price=101, price_asof="2026-11-20T21:00:00+00:00",
+                          analytics_asof="2026-11-20", analytics_partial=True,
+                          analytics_completion_basis="VENDOR_TRADING_PERIOD")
+        universe = {"instruments": [instrument], "directory_us_available": 5000, "directory_errors": []}
+        with tempfile.TemporaryDirectory() as tmp, patch.object(terminal, "fetch", return_value=[]), \
+             patch.object(terminal, "assemble_universe", return_value=universe), \
+             patch.object(terminal, "yahoo_row", return_value=incomplete), \
+             patch.object(terminal, "utc_now", return_value=now):
+            result = terminal.collect({"markets": [old]}, Path(tmp), max_requests=1,
+                                      intraday_budget=0, workers=1, now=now)
+        row = result["markets"][0]
+        self.assertEqual(row["price"], 99)
+        self.assertEqual(row["price_asof"], old["price_asof"])
+        self.assertEqual(row["errors"][0]["error"], "US_CLOSE_NOT_AVAILABLE")
+        self.assertEqual(row["errors"][0]["close_check"]["expected_session"], "2026-11-20")
+        self.assertTrue(row["errors"][0]["close_check"]["analytics_partial"])
+
     def test_returns_sma_and_vol_are_calculated_from_daily_closes(self):
         series=[{"date":str(i),"close":float(i+1)} for i in range(250)]
         returns,sma,vol=terminal.analytics(series,252)
