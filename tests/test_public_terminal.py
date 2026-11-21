@@ -59,6 +59,33 @@ class TerminalTests(unittest.TestCase):
         self.assertFalse(row["analytics_quote_reaches_close"])
         self.assertTrue(terminal.missing_cash_close(row, "2026-11-20"))
 
+    def test_legacy_complete_flag_does_not_certify_preclose_quote(self):
+        row = {"market": "US", "price_asof": "2026-11-20T15:00:00+00:00",
+               "analytics_asof": "2026-11-20", "analytics_partial": False,
+               "series": [{"date": "2026-11-20", "close": 100}]}
+        self.assertTrue(terminal.missing_cash_close(row, "2026-11-20"))
+
+    def test_forced_refresh_retains_existing_completed_close_when_source_regresses(self):
+        now = datetime(2026, 11, 21, 9, tzinfo=timezone.utc)
+        instrument = {"symbol": "2800.HK", "market": "HK", "currency": "HKD"}
+        old = dict(terminal.empty_row(instrument), price=25, price_asof="2026-11-20T08:08:00+00:00",
+                   analytics_asof="2026-11-20", analytics_partial=False,
+                   series=[{"date": "2026-11-20", "close": 25}])
+        regressed = dict(old, analytics_asof="2026-11-19",
+                         series=[{"date": "2026-11-19", "close": 24}])
+        universe = {"instruments": [instrument], "directory_us_available": 5000, "directory_errors": []}
+        with tempfile.TemporaryDirectory() as tmp, patch.object(terminal, "fetch", return_value=[]), \
+             patch.object(terminal, "assemble_universe", return_value=universe), \
+             patch.object(terminal, "yahoo_row", return_value=regressed), \
+             patch.object(terminal, "utc_now", return_value=now):
+            result = terminal.collect({"markets": [old]}, Path(tmp), max_requests=1,
+                                      intraday_budget=0, workers=1, force=True, now=now)
+        row = result["markets"][0]
+        self.assertEqual(row["analytics_asof"], "2026-11-20")
+        self.assertEqual(row["series"], old["series"])
+        self.assertTrue(row["fresh"])
+        self.assertEqual(row["errors"][0]["error"], "HK_CLOSE_NOT_AVAILABLE")
+
     def test_cash_holiday_bar_is_rejected(self):
         now = datetime(2026, 11, 26, 22, 31, tzinfo=timezone.utc)
         with self.assertRaisesRegex(terminal.SourceError, "CASH_NON_SESSION_BAR"):

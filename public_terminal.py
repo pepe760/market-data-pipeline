@@ -418,11 +418,20 @@ def missing_cash_close(row, latest_closed_session):
         return False
     zone = ZoneInfo("Asia/Hong_Kong" if row["market"] == "HK" else "America/New_York")
     try:
-        quote_day = datetime.fromisoformat(row.get("price_asof") or "").astimezone(zone).date().isoformat()
+        quote_clock = datetime.fromisoformat(row.get("price_asof") or "")
+        if quote_clock.tzinfo is None:
+            return True
+        quote_day = quote_clock.astimezone(zone).date().isoformat()
     except (ValueError, TypeError):
         return True
     if quote_day < latest_closed_session:
         return True
+    calendar = {"US": "XNYS", "ETF": "XNYS", "HK": "XHKG"}.get(row["market"])
+    if calendar and quote_day == latest_closed_session:
+        import exchange_calendars as xc
+        close = xc.get_calendar(calendar).session_close(latest_closed_session).to_pydatetime()
+        if quote_clock < close:
+            return True
     official = row.get("official_close") or {}
     if official.get("date") == latest_closed_session and (number(official.get("price")) or 0) > 0:
         return False
@@ -521,7 +530,9 @@ def collect(previous, output_dir, *, max_requests=180, workers=6, force=False,
             result=(binance_row(instrument,now,tickers.get(instrument["symbol"]))
                     if instrument["market"]=="Crypto" else yahoo_row(instrument,now))
             market = instrument["market"]
-            if symbol in catch_up and missing_cash_close(result, latest_close.get(market)):
+            # A forced refresh must not replace an already complete observation
+            # with an older/incomplete provider response either.
+            if symbol in old and missing_cash_close(result, latest_close.get(market)):
                 close_check = {
                     "expected_session": latest_close.get(market),
                     "quote_asof": result.get("price_asof"),
