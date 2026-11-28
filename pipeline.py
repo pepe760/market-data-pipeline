@@ -98,10 +98,18 @@ MAX_VENDOR_DEFECT_SESSIONS_PER_TICKER = 1
 MAX_ISOLATED_VENDOR_DEFECT_TICKERS = 5
 
 
-def news_payload(yf, ticker):
+def is_rate_limit(exc):
+    return ('RateLimit' in type(exc).__name__ or getattr(exc, 'code', None) == 429
+            or getattr(exc, 'status_code', None) == 429)
+
+
+def news_payload(yf, ticker, circuit=None):
     """Headlines/links only; retain distinct provider provenance."""
+    circuit = circuit if circuit is not None else {}
     for source, fetch in [('Yahoo/yfinance', lambda: yf.Ticker(ticker).get_news(count=10)),
                           ('Yahoo/search', lambda: yf.Search(ticker, max_results=1, news_count=10).news)]:
+        if circuit.get('yahoo_rate_limited'):
+            break
         try:
             items = fetch()
             out = []
@@ -116,7 +124,9 @@ def news_payload(yf, ticker):
                                     published_at=content.get('pubDate') or content.get('providerPublishTime')))
             if out: return out, source
         except Exception as exc:
-            if 'RateLimit' in type(exc).__name__: raise
+            if is_rate_limit(exc):
+                circuit['yahoo_rate_limited'] = True
+                break
     names={'AAPL':'Apple','MSFT':'Microsoft','GOOGL':'Alphabet Google','AMZN':'Amazon',
            'NVDA':'Nvidia','META':'Meta Platforms','TSLA':'Tesla'}
     query=urllib.parse.urlencode({'q':names.get(ticker,ticker)+' stock when:7d', 'hl':'en-US','gl':'US','ceid':'US:en'})
@@ -423,30 +433,37 @@ def collect(config, dest, archived=None):
             checks.append(dict(ticker=ticker, kind='prices', provider_symbol=yahoo_symbol(ticker, sessions[0]),
                                error_type=type(exc).__name__, status='RATE_LIMIT' if tripped else 'ERROR'))
         time.sleep(0.5)
+    calendar_tripped = False
+    news_circuit = {}
     for ticker in config['events']:
         for kind in ('calendar', 'news'):
-            if tripped:
+            if ((kind == 'calendar' and calendar_tripped)
+                    or (kind == 'news' and news_circuit.get('rss_rate_limited'))):
                 checks.append(dict(ticker=ticker, kind=kind, status='NOT_ATTEMPTED_RATE_LIMIT'))
                 continue
             try:
-                obj = yf.Ticker(ticker)
                 event_source='Yahoo/yfinance'
                 if kind == 'news':
-                    payload,event_source=news_payload(yf,ticker)
+                    payload,event_source=news_payload(yf,ticker,news_circuit)
                 else:
-                    payload=obj.calendar
+                    payload=yf.Ticker(ticker).calendar
                 if kind == 'news' and not payload:
                     # Empty is not proof that no news exists; one bounded retry.
                     time.sleep(1)
-                    payload,event_source=news_payload(yf,ticker)
+                    payload,event_source=news_payload(yf,ticker,news_circuit)
                 # Keep no copyrighted full article text or vendor debug response.
                 # news_payload already returns only the four allowed metadata fields.
                 events.append(dict(ticker=ticker, kind=kind, available_at=now().isoformat(),
                                    source=event_source, payload=payload, pit_status='OBSERVATION_ONLY'))
                 checks.append(dict(ticker=ticker, kind=kind, source=event_source,status='OK' if payload else 'EMPTY_UNVERIFIED'))
             except Exception as exc:
-                tripped = 'RateLimit' in type(exc).__name__
-                checks.append(dict(ticker=ticker, kind=kind, status='RATE_LIMIT' if tripped else 'ERROR'))
+                limited = is_rate_limit(exc)
+                if limited:
+                    if kind == 'calendar':
+                        calendar_tripped = True
+                    else:
+                        news_circuit['rss_rate_limited'] = True
+                checks.append(dict(ticker=ticker, kind=kind, status='RATE_LIMIT' if limited else 'ERROR'))
             time.sleep(0.5)
     for name, rows in [('prices.jsonl', prices), ('events.jsonl', events)]:
         with (dest / name).open('w') as handle:
@@ -686,7 +703,7 @@ def archived_price_rows(target, base, tickers=None):
     return rows
 
 
-def cloud(options=False):
+def cloud(options=False, collector=None):
     global STAGE
     target = remote()
     with tempfile.TemporaryDirectory() as tmp:
@@ -707,9 +724,12 @@ def cloud(options=False):
         dest = base / (now().strftime('%Y%m%dT%H%M%SZ-') + uuid.uuid4().hex[:12])
         dest.mkdir()
         STAGE = 'read_verified_history'
-        archived = {} if options else VerifiedPriceArchive(target, base)
+        archived = {} if options or collector is not None else VerifiedPriceArchive(target, base)
         STAGE = 'collect_and_serialize'
-        status = options_collector.collect(config, dest) if options else collect(config, dest,archived)
+        if collector is not None:
+            status = collector(config, dest, target, base)
+        else:
+            status = options_collector.collect(config, dest) if options else collect(config, dest,archived)
         STAGE = 'seal'
         seal(dest)
         verify(dest)

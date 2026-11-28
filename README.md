@@ -32,6 +32,17 @@ This is archive coverage recovery, not a new vendor observation or independent
 cross-check. Any session never captured, invalid row or hash failure still fails
 closed. News and option snapshots are never recovered this way.
 
+Manual `Daily collection` dispatches can select `events_only` to repair M7
+events without downloading every price again. This mode requires one fully
+hash-verified snapshot with the exact current completed-session window and all
+615 configured price checks and raw keys complete. It checks at most 32 manifests
+and eight price batches, copies the original price bytes and observation clocks,
+and fetches only events. A stale or incomplete snapshot fails closed; there is no
+automatic full-price fallback. Private quality records bind the source snapshot.
+Yahoo news rate limits switch news to the existing Google News RSS metadata
+source; price, calendar and news circuits remain separate. Missing events still
+leave the batch PARTIAL and nonzero.
+
 Prices use Yahoo via yfinance, explicitly separate split-adjusted vendor Close
 from dividend-adjusted Adj Close. Neither is labelled raw, and neither is silently
 merged into Sharadar. Each batch records retrieval time as `available_at`:

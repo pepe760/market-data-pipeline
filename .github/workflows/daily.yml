@@ -1,6 +1,11 @@
 name: Daily collection
 on:
   workflow_dispatch:
+    inputs:
+      events_only:
+        description: Repair M7 events using a verified complete current price snapshot
+        type: boolean
+        default: false
   schedule:
     - cron: '47 22 * * 1-5'
     - cron: '17 3 * * 2-6'
@@ -31,4 +36,10 @@ jobs:
           DRIVE_FOLDER_ID: ${{ secrets.DRIVE_FOLDER_ID }}
           DRIVE_CLIENT_ID: ${{ secrets.DRIVE_CLIENT_ID }}
           DRIVE_CLIENT_SECRET: ${{ secrets.DRIVE_CLIENT_SECRET }}
-        run: python pipeline.py cloud
+          EVENTS_ONLY: ${{ inputs.events_only }}
+        run: |
+          if [ "$EVENTS_ONLY" = "true" ]; then
+            python event_repair.py
+          else
+            python pipeline.py cloud
+          fi
