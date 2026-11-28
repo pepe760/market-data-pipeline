@@ -358,7 +358,9 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(quality['checks'][0]['status'], 'PARTIAL')
         self.assertEqual(quality['checks'][0]['missing_sessions'], ['2026-10-07', '2026-10-08'])
         self.assertEqual(quality['checks'][0]['unfinalized_close_sessions'], ['2026-10-08'])
-        self.assertEqual(quality['pending_official_closes'], [])
+        self.assertEqual(quality['pending_official_closes'], [dict(
+            ticker='ABBV', sessions=['2026-10-08'], reason='Unfinalized close',
+            check_status='PARTIAL')])
         self.assertEqual(rows, [])
         self.assertEqual(p.run_result(status)[0], 2)
 
@@ -490,3 +492,102 @@ class ActiveTickerArchiveTests(unittest.TestCase):
         self.assertFalse(p.archive_basis_matches('SNDK', [live],
             {('SNDK', '2026-11-17'):saved, ('SNDK', '2026-11-16'):earlier}))
         self.assertFalse(p.archive_basis_matches('SNDK', [], {('SNDK', '2026-11-16'):earlier}))
+
+
+class LiveGapArchiveSelectionTests(unittest.TestCase):
+    sessions = ['2026-11-16', '2026-11-17', '2026-11-18', '2026-11-19']
+
+    def row(self, day, values=None):
+        return p.price_row('SNDK', day, values or GOOD, '2026-11-19T22:00:00Z')
+
+    def archive(self, root, number, rows):
+        folder = root / ('20261120T%06dZ-%012x' % (number, number))
+        folder.mkdir()
+        for name in p.FILES:
+            (folder/name).write_text('')
+        (folder/'prices.jsonl').write_text(''.join(json.dumps(r)+'\n' for r in rows))
+        p.seal(folder)
+        return folder
+
+    def recover(self, root, folders, missing, current, **limits):
+        listing = subprocess.CompletedProcess([], 0, stdout=''.join(f.name+'/\n' for f in folders).encode())
+        def copy(command, source, dest):
+            folder = root / source.split('batches/')[1].split('/')[0]
+            if command == 'copyto':
+                shutil.copyfile(folder/Path(source).name, dest)
+            else:
+                shutil.copytree(folder, dest, dirs_exist_ok=True)
+        with patch.object(p.subprocess, 'run', return_value=listing), patch.object(p, 'rclone', side_effect=copy):
+            return p.VerifiedPriceArchive('test:', root/'readback', **limits).recover(
+                'SNDK', missing, current, self.sessions)
+
+    def test_missing_key_plus_overlap_does_not_require_unrelated_live_day(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            folder = self.archive(root, 1, [self.row(self.sessions[0]), self.row(self.sessions[1])])
+            current = [self.row(d) for d in self.sessions[1:]]
+            rows, details = self.recover(root, [folder], self.sessions[:1], current)
+            saved = rows[('SNDK', self.sessions[0])]
+            self.assertEqual(details['reason'], 'matched')
+            self.assertEqual(saved['available_at'], '2026-11-19T22:00:00Z')
+            self.assertEqual(saved['recovery_manifest_sha256'], p.digest(folder/'manifest.json'))
+            self.assertEqual(saved['recovery_prices_sha256'], p.digest(folder/'prices.jsonl'))
+
+    def test_tries_older_candidate_after_no_overlap_and_basis_mismatch(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            good = self.archive(root, 1, [self.row(d) for d in self.sessions[:2]])
+            mismatch = self.archive(root, 2, [self.row(self.sessions[0]),
+                self.row(self.sessions[1], {**GOOD, 'Close':5, 'Adj Close':5, 'Low':4})])
+            no_overlap = self.archive(root, 3, [self.row(self.sessions[0])])
+            rows, details = self.recover(root, [good, mismatch, no_overlap], self.sessions[:1],
+                                         [self.row(self.sessions[1])])
+            self.assertEqual(rows[('SNDK', self.sessions[0])]['recovery_batch'], good.name)
+            self.assertEqual([x['reason'] for x in details['candidate_rejections']],
+                             ['no_overlap', 'basis_mismatch'])
+
+    def test_candidates_are_not_stitched_and_search_bound_is_visible(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            older = self.archive(root, 1, [self.row(d) for d in (self.sessions[0], self.sessions[2])])
+            newer = self.archive(root, 2, [self.row(d) for d in self.sessions[1:3]])
+            rows, details = self.recover(root, [older, newer], self.sessions[:2],
+                                         [self.row(self.sessions[2])], max_price_batches=1)
+            self.assertEqual(details['reason'], 'search_bound')
+            self.assertTrue(details['search_bound_reached'])
+            self.assertEqual(details['unresolved_sessions'], self.sessions[:1])
+            self.assertNotIn(('SNDK', self.sessions[0]), rows)
+            rows, details = self.recover(root, [older, newer], self.sessions[:2], [self.row(self.sessions[2])])
+            self.assertEqual(details['unresolved_sessions'], self.sessions[:1])
+            self.assertEqual({r['recovery_batch'] for r in rows.values()}, {newer.name})
+
+    def test_no_candidate_no_overlap_and_basis_mismatch_have_distinct_reasons(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            none = self.archive(root, 1, [self.row(self.sessions[1])])
+            no_overlap = self.archive(root, 2, [self.row(self.sessions[0])])
+            mismatch = self.archive(root, 3, [self.row(self.sessions[0]),
+                self.row(self.sessions[1], {**GOOD, 'Close':5, 'Adj Close':5, 'Low':4})])
+            for folder, expected in [(none, 'no_candidate'), (no_overlap, 'no_overlap'),
+                                     (mismatch, 'basis_mismatch')]:
+                rows, details = self.recover(root, [folder], self.sessions[:1], [self.row(self.sessions[1])])
+                self.assertEqual(rows, {})
+                self.assertEqual(details['reason'], expected)
+
+    def test_archive_is_not_touched_when_live_history_is_complete(self):
+        archive = Mock(spec=p.VerifiedPriceArchive)
+        status, _, _, _ = collect_history([Frame([(d, GOOD) for d in self.sessions])],
+                                          ['SNDK'], self.sessions, archive)
+        self.assertEqual(status, 'COMPLETE')
+        archive.recover.assert_not_called()
+
+    def test_mixed_partial_close_and_nonfinite_reasons_remain_visible(self):
+        frames = [Frame([(self.sessions[0], GOOD), (self.sessions[1], BAD),
+                         (self.sessions[-1], UNFINAL)])] * 2
+        with patch.object(p, 'latest_official_close_pending', return_value=False):
+            status, quality, _, _ = collect_history(frames, ['SNDK'], self.sessions)
+        self.assertEqual(status, 'PARTIAL')
+        self.assertEqual(p.run_result(status)[0], 2)
+        self.assertEqual(quality['vendor_price_defects'][0]['sessions'], self.sessions[1:2])
+        self.assertEqual(quality['overdue_official_closes'][0]['sessions'], self.sessions[-1:])
+        self.assertEqual(quality['overdue_official_closes'][0]['check_status'], 'PARTIAL')
